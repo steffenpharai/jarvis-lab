@@ -24,21 +24,32 @@ not `ollama`).
 
 ## Status
 
-`v1` — works end-to-end, verified on a Jetson Orin Nano Super (8 GB)
-running JetPack 6.2.x in multi-user.target.
+`v2` — full Round 1+2 roadmap shipped. Verified on a Jetson Orin Nano
+Super (8 GB) running JetPack 6.2.x in multi-user.target.
 
 | Capability                          | Status |
 |-------------------------------------|--------|
 | Live camera dashboard               | ✅ working, 640×480 @ 10 fps MJPEG |
-| Text / SNAP / voice input           | ✅ all three modes |
-| VLM streaming responses             | ✅ SSE token-by-token |
+| Text / SNAP / voice / point input   | ✅ all four modes |
+| VLM streaming responses             | ✅ SSE token-by-token, ~22 tok/s |
+| Sentence-streaming TTS              | ✅ Web Audio API gapless playback with sentence highlight |
+| openWakeWord "Hey Jarvis"           | ✅ shared AudioBus, auto-fires talk turn |
 | Markdown rendering in replies       | ✅ marked.js |
-| Conversation memory                 | ✅ 3 turn pairs |
+| Conversation memory (in-process)    | ✅ 3 turn pairs for VLM context |
+| SQLite persistence + FTS search     | ✅ Memory tab, pin survives restart |
+| Frame pHash cache + scene-change gate | ✅ live mode skips redundant VLM calls |
+| Continuous Live Mode                | ✅ auto-narration with scene gate |
+| Per-message latency breakdown bar   | ✅ stacked colored segments |
+| Persona presets (4)                 | ✅ focused / inspector / companion / curator |
+| Command palette + keyboard shortcuts| ✅ Enter / Space / L / W / P / R / 1-4 / ? |
 | Anti-hallucination prompt           | ✅ verified on dark scenes |
+| systemd auto-start units            | ✅ install once via systemctl enable |
 | Backpack power + Bluetooth audio    | 🛠 hardware integration pending |
-| Wake-word ("Hey Jarvis")            | 🛠 next |
-| Cloud-frontier escalation           | 🛠 next |
-| Persistent systemd auto-start       | 🛠 next |
+| Tool use + cloud-frontier escalation | 🛠 see docs/NEXT_SESSION.md |
+| Long-term semantic memory           | 🛠 see docs/NEXT_SESSION.md |
+| Multi-modal agentic loop            | 🛠 see docs/NEXT_SESSION.md |
+
+---
 
 ---
 
