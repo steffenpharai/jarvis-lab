@@ -2142,9 +2142,14 @@ shortcutsModal.onclick = (e) => { if (e.target === shortcutsModal) shortcutsModa
 
 /* ---- global shortcuts ---- */
 document.addEventListener('keydown', (e) => {
-  if (document.activeElement === text) return;
+  // Shortcuts work when no text field is focused OR when the focused
+  // text field is empty (so users can fire shortcuts without first
+  // clicking outside the autofocused textarea). Modifier keys are
+  // ignored to avoid clobbering native shortcuts.
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
   const k = e.target;
-  if (k && (k.tagName === 'INPUT' || k.tagName === 'TEXTAREA')) return;
+  const inField = k && (k.tagName === 'INPUT' || k.tagName === 'TEXTAREA');
+  if (inField && k.value.length > 0) return;
   if (e.key === ' ' && !isStreaming) { e.preventDefault(); doTurn({kind: 'snap'}); }
   else if (e.key === '/') { e.preventDefault(); text.focus(); text.value = '/'; openPalette(''); }
   else if (e.key === 'Escape') {
