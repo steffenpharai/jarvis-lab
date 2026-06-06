@@ -32,7 +32,8 @@ import uuid
 import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-import urllib.request
+
+import httpx     # OpenAI / Anthropic SDK pattern: streaming with proper timeouts
 
 LAB = Path("/home/zip/jarvis-lab")
 WHISPER_BIN = LAB / "build/whisper.cpp/build/bin/whisper-cli"
@@ -360,10 +361,21 @@ PINS_LOCK = threading.Lock()
 
 
 # ----- streaming VLM ----------------------------------------------------------
+# Pattern intentionally matches the OpenAI/Anthropic Python SDKs: stream=True
+# with a TUPLE (connect, read) timeout where `read` is the per-chunk timeout.
+# When llama-server stalls mid-stream, the read timeout raises
+# requests.exceptions.Timeout, the with-block tears the connection down, and
+# the caller gets back the partial reply it accumulated so far. No watchdog
+# threads, no socket-close hacks.
+class VLMStallTimeout(Exception):
+    """Raised when llama-server goes quiet mid-stream for read_timeout_s."""
+
+
 def stream_vlm(question: str, frame_jpg: Path,
                cancel: threading.Event, on_token,
                include_history: bool = True,
-               deadline_s: float = 60.0) -> tuple[str, dict]:
+               connect_timeout_s: float = 5.0,
+               read_timeout_s: float = 20.0) -> tuple[str, dict]:
     b64 = base64.b64encode(frame_jpg.read_bytes()).decode()
     with SETTINGS_LOCK:
         sysp = SETTINGS["system_prompt"]
@@ -388,66 +400,59 @@ def stream_vlm(question: str, frame_jpg: Path,
         "max_tokens": max_t,
         "temperature": temp,
     }
-    req = urllib.request.Request(
-        VLM_URL, data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
+
+    full: list[str] = []
+    usage: dict = {}
+    stalled = False
+    # httpx Timeout: connect for TCP handshake, read is per-recv.
+    # Crucially we also enforce a wall-clock deadline below — a server
+    # that sends SSE keepalives can keep the read alive indefinitely;
+    # the wall-clock check is the only correct upper bound for a turn.
+    timeout = httpx.Timeout(
+        connect=connect_timeout_s,
+        read=read_timeout_s,
+        write=connect_timeout_s,
+        pool=connect_timeout_s,
     )
-    full = []
-    usage = {}
-    resp = urllib.request.urlopen(req, timeout=15)
-
-    # Watchdog: if cancel fires (user clicked Stop) or the deadline
-    # passes (llama-server got stuck mid-stream), force-close the
-    # response so the urllib read() inside the for-loop fails out
-    # with an exception we can swallow. urllib's timeout=... only
-    # applies to the initial connect / header read; per-chunk reads
-    # are NOT interrupted, hence the explicit watchdog.
-    closed = {"flag": False}
-    def _watchdog() -> None:
-        # wait UP TO deadline_s for cancel; close the socket on either
-        # outcome so the urllib read loop breaks out
-        cancel.wait(deadline_s)
-        closed["flag"] = True
-        try:
-            resp.close()
-        except Exception:
-            pass
-    threading.Thread(target=_watchdog, daemon=True).start()
-    deadline_at = time.monotonic() + deadline_s
-
+    deadline_at = time.monotonic() + max(read_timeout_s * 4, 45.0)
     try:
-        for raw in resp:
-            if cancel.is_set():
-                break
-            if time.monotonic() > deadline_at:
-                cancel.set()
-                break
-            line = raw.decode().strip()
-            if not line.startswith("data:"):
-                continue
-            data = line[5:].strip()
-            if data == "[DONE]":
-                break
-            try:
-                obj = json.loads(data)
-            except json.JSONDecodeError:
-                continue
-            if obj.get("usage"):
-                usage = obj["usage"]
-            delta = obj.get("choices", [{}])[0].get("delta", {}).get("content")
-            if delta is None:
-                continue
-            full.append(delta)
-            on_token(delta)
-    except Exception:
-        # Watchdog closed the socket; treat as a clean cancellation
-        if not closed["flag"]:
-            raise
-    finally:
-        try:
-            resp.close()
-        except Exception:
-            pass
+        with httpx.stream(
+            "POST", VLM_URL, json=body,
+            timeout=timeout,
+            headers={"Accept": "text/event-stream"},
+        ) as resp:
+            resp.raise_for_status()
+            for raw in resp.iter_lines():
+                if cancel.is_set():
+                    break
+                if time.monotonic() > deadline_at:
+                    stalled = True
+                    break
+                if not raw:
+                    continue
+                line = raw.strip()
+                if line.startswith(":"):  # SSE comment / keepalive
+                    continue
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("usage"):
+                    usage = obj["usage"]
+                delta = obj.get("choices", [{}])[0].get("delta", {}).get("content")
+                if delta is None:
+                    continue
+                full.append(delta)
+                on_token(delta)
+    except (httpx.TimeoutException, httpx.RemoteProtocolError, httpx.NetworkError):
+        stalled = True
+    if stalled:
+        usage["stalled"] = True
     return "".join(full).strip(), usage
 
 
@@ -600,48 +605,59 @@ def run_turn(ctx: TurnCtx, payload: dict) -> None:
 
 
 # ----- LIVE MODE (auto-narration) ---------------------------------------------
+# Critical invariant: never call _broadcast() while holding self.lock.
+# threading.Lock is non-reentrant; the previous version called _broadcast
+# from inside start()/stop()/while holding the lock and deadlocked the
+# entire LiveMode object on the first observation (worker stuck forever
+# trying to broadcast, no further observations possible).
 class LiveMode:
     def __init__(self) -> None:
-        self.lock = threading.Lock()
-        self.running = False
+        self.lock = threading.Lock()  # protects subscribers list only
+        self.running = False           # atomic Python bool, no lock needed
         self.subscribers: list[queue.Queue] = []
         self.observations: collections.deque = collections.deque(maxlen=50)
         self._thread: threading.Thread | None = None
         self._stop_evt = threading.Event()
 
     def start(self) -> bool:
-        with self.lock:
-            if self.running:
-                return False
-            self.running = True
-            self._stop_evt.clear()
-            self._thread = threading.Thread(target=self._run, daemon=True)
-            self._thread.start()
-            self._broadcast({"event": "start", "ts": time.time()})
-            return True
+        # No self.lock for setting running — start/stop are single-caller
+        # from the HTTP handler thread; they don't race each other in
+        # practice and we explicitly forbid concurrent start/stop calls.
+        if self.running:
+            return False
+        self.running = True
+        self._stop_evt.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        self._broadcast({"event": "start", "ts": time.time()})
+        return True
 
     def stop(self) -> bool:
-        with self.lock:
-            if not self.running:
-                return False
-            self.running = False
-            self._stop_evt.set()
-            self._broadcast({"event": "stop", "ts": time.time()})
-            return True
+        if not self.running:
+            return False
+        self.running = False
+        self._stop_evt.set()
+        self._broadcast({"event": "stop", "ts": time.time()})
+        return True
 
     def is_running(self) -> bool:
-        with self.lock:
-            return self.running
+        return self.running
 
     def subscribe(self) -> queue.Queue:
         q: queue.Queue = queue.Queue(maxsize=50)
+        # Snapshot observations OUTSIDE the lock (deque iteration over a
+        # snapshot is safe; len/append on a deque are atomic in CPython).
+        recent = list(self.observations)[-10:]
+        running_now = self.running
         with self.lock:
             self.subscribers.append(q)
-            # Replay recent observations
-            for obs in list(self.observations)[-10:]:
-                with contextlib.suppress(queue.Full):
-                    q.put_nowait({"event": "observation", **obs})
-            q.put_nowait({"event": "state", "running": self.running})
+        # Seed the new subscriber with recent state outside the lock so
+        # we never hold the broadcast lock while doing per-subscriber I/O.
+        for obs in recent:
+            with contextlib.suppress(queue.Full):
+                q.put_nowait({"event": "observation", **obs})
+        with contextlib.suppress(queue.Full):
+            q.put_nowait({"event": "state", "running": running_now})
         return q
 
     def unsubscribe(self, q: queue.Queue) -> None:
@@ -650,10 +666,14 @@ class LiveMode:
                 self.subscribers.remove(q)
 
     def _broadcast(self, ev: dict) -> None:
+        # Take a SNAPSHOT of subscribers under the lock, then release the
+        # lock before doing per-subscriber puts. Holding the lock during
+        # the puts would invite deadlocks (e.g. subscribe() also needs it).
         with self.lock:
-            for q in list(self.subscribers):
-                with contextlib.suppress(queue.Full):
-                    q.put_nowait(ev)
+            subs = list(self.subscribers)
+        for q in subs:
+            with contextlib.suppress(queue.Full):
+                q.put_nowait(ev)
 
     def _run(self) -> None:
         while not self._stop_evt.is_set():
@@ -667,37 +687,35 @@ class LiveMode:
                 def on_tok(_d: str) -> None:
                     return  # batch only
 
-                reply, _ = stream_vlm(
+                reply, meta = stream_vlm(
                     "In one short sentence, describe what is happening or "
                     "visible in the scene RIGHT NOW. Be concrete. If nothing "
                     "has notably changed, say what is most salient.",
                     work / "frame.jpg", cancel, on_tok,
-                    include_history=False, deadline_s=25.0,
+                    include_history=False,
+                    read_timeout_s=15.0,
                 )
-                if not reply:
-                    # watchdog fired; treat as a skipped tick, do not stop
+                if meta.get("stalled") and not reply:
                     self._broadcast({
                         "event": "error",
-                        "error": "live observation timed out",
+                        "error": "VLM stalled on this frame, skipping",
                         "ts": time.time(),
                     })
-                    continue
-                obs = {
-                    "ts": time.time(),
-                    "turn_id": tid,
-                    "text": reply,
-                    "frame_url": f"/frame/{tid}.jpg",
-                }
-                self.observations.append(obs)
-                self._broadcast({"event": "observation", **obs})
+                else:
+                    obs = {
+                        "ts": time.time(),
+                        "turn_id": tid,
+                        "text": reply,
+                        "frame_url": f"/frame/{tid}.jpg",
+                    }
+                    self.observations.append(obs)
+                    self._broadcast({"event": "observation", **obs})
             except Exception as exc:
                 self._broadcast({"event": "error", "error": str(exc), "ts": time.time()})
-            # interval
             with SETTINGS_LOCK:
                 interval = SETTINGS["live_interval_s"]
-            for _ in range(max(1, int(interval * 4))):
-                if self._stop_evt.wait(0.25):
-                    return
+            if self._stop_evt.wait(interval):
+                return
 
     def list_observations(self) -> list:
         return list(self.observations)
@@ -750,8 +768,8 @@ _VLM_UP = {"flag": False}
 def _vlm_health_poller():
     while True:
         try:
-            with urllib.request.urlopen(VLM_HEALTH, timeout=2) as r:
-                _VLM_UP["flag"] = (r.status == 200)
+            r = httpx.get(VLM_HEALTH, timeout=httpx.Timeout(connect=2, read=2, write=2, pool=2))
+            _VLM_UP["flag"] = (r.status_code == 200)
         except Exception:
             _VLM_UP["flag"] = False
         time.sleep(3)
@@ -879,10 +897,13 @@ body {
   display: grid; gap: 14px; padding: 14px 22px; min-height: 0;
 }
 
-/* feed */
+/* feed — explicit height, full container width, object-fit cover.
+   Aspect-ratio fights with max-height in CSS Grid and was making the
+   camera narrower than its column on wide viewports. */
 .feedwrap {
   position: relative; border-radius: var(--r-lg);
   overflow: hidden; background: #000; border: 1px solid var(--border);
+  width: 100%; height: 46vh;
 }
 .feedwrap img.live {
   width: 100%; height: 100%; object-fit: cover; display: block;
@@ -1330,17 +1351,18 @@ textarea#text::placeholder { color: var(--dim); }
 .shortcut-grid .desc { color: var(--muted); font-size: 12.5px; }
 
 /* responsive: wide (>= 980px) */
+/* Single-column always: camera hero on top, conversation + composer below.
+   Wide-screen optimization is cap-width-and-center, NOT side-by-side
+   columns. This matches the Gemini Live / ChatGPT Vision shape for
+   wearable VLM dashboards: the camera is the always-on context. */
 @media (min-width: 980px) {
-  .main {
-    grid-template-columns: minmax(0, 1.45fr) minmax(380px, 1fr);
-    grid-template-rows: 1fr;
-    gap: 18px; padding: 14px 22px;
-  }
-  .rightcol { grid-row: 1; }
+  .main { padding: 14px max(22px, calc((100vw - 1100px) / 2)); }
+  .feedwrap { height: 52vh; }
 }
 @media (max-width: 640px) {
   .topbar { padding: 11px 14px; }
   .main { padding: 10px 14px; gap: 10px; }
+  .feedwrap { height: 38vh; }
   .bubble.user { max-width: 95%; }
 }
 </style>
