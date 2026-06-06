@@ -1050,6 +1050,7 @@ async function doTurn(payload) {
   ensureAudioCtx(); resetAudioQueue();
 
   let userText = '';
+  let kindForUI = payload.kind;
   if (payload.kind === 'text') userText = payload.text;
   else if (payload.kind === 'snap') userText = 'Describe what you see';
   else if (payload.kind === 'talk') userText = '(listening…)';
@@ -1058,24 +1059,34 @@ async function doTurn(payload) {
   if (payload.kind !== 'regenerate') makeUserMsg(userText, payload.kind);
 
   const jmsg = makeJarvisMsg(payload.kind);
-  const bubble = jmsg.querySelector('.bubble');
-  const phaseBadge = jmsg.querySelector('#phase');
-  const timingsEl = jmsg.querySelector('#timings');
-  const latBar = jmsg.querySelector('#latbar');
-  let raw = '';
   switchPane('conv');
 
+  // POST /turn to start it server-side, then attach to its event stream.
   let r;
   try {
     r = await fetch('/turn', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
   } catch (e) {
     toast('Network error: ' + e.message, 'error');
     isStreaming = false; setComposerBusy(false);
-    bubble.innerHTML = '<em>(failed to reach server)</em>'; return;
+    jmsg.querySelector('.bubble').innerHTML = '<em>(failed to reach server)</em>';
+    return;
   }
   const { turn_id } = await r.json();
+  attachTurn(turn_id, jmsg, payload.kind);
+}
+
+/* Attach the client UI to an existing server-side turn. Used both for
+   user-initiated turns (just after POST /turn) AND for wake-word turns
+   the server already spawned. */
+function attachTurn(turn_id, jmsg, kind) {
   currentTurn = { id: turn_id };
   jmsg.dataset.turnId = turn_id;
+  const bubble = jmsg.querySelector('.bubble');
+  const phaseBadge = jmsg.querySelector('#phase');
+  const timingsEl = jmsg.querySelector('#timings');
+  const latBar = jmsg.querySelector('#latbar');
+  let raw = '';
+  isStreaming = true; setComposerBusy(true);
 
   const es = new EventSource('/events/' + turn_id);
   currentTurn.es = es;
@@ -1106,10 +1117,10 @@ async function doTurn(payload) {
       setLive('idle', 'transcribing'); phaseBadge.textContent = 'transcribing';
     } else if (ph === 'capturing') {
       setLive('recording', 'looking'); phaseBadge.textContent = 'looking';
-      if (m.question && payload.kind === 'regenerate') {
+      if (m.question && kind === 'regenerate') {
         const msg = makeUserMsg(m.question, 'typed');
         paneConv.insertBefore(msg, jmsg);
-      } else if (m.transcription && payload.kind === 'talk') {
+      } else if (m.transcription && kind === 'talk') {
         const prevUser = jmsg.previousElementSibling;
         if (prevUser && prevUser.classList.contains('user-msg')) {
           prevUser.querySelector('.bubble').textContent = m.transcription || '(silent)';
@@ -1348,6 +1359,16 @@ function attachLiveStream() {
       livetoggle.querySelector('span:nth-child(2)').textContent = liveOn ? 'Live ON' : 'Live mode';
     } else if (m.event === 'wake') {
       toast('Hey Jarvis · listening', 'wake');
+      // The server has already spawned a talk-mode turn with this id.
+      // Open the matching event stream and render it in the conversation
+      // pane exactly as if the user had clicked the orb themselves.
+      if (m.turn_id && !isStreaming) {
+        ensureAudioCtx(); resetAudioQueue();
+        makeUserMsg('(wake · listening…)', 'talk');
+        const jmsg = makeJarvisMsg('talk');
+        switchPane('conv');
+        attachTurn(m.turn_id, jmsg, 'talk');
+      }
     } else if (m.event === 'error') {
       toast('Live: ' + m.error, 'error');
     }
