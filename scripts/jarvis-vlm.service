@@ -1,0 +1,22 @@
+[Unit]
+Description=Jarvis VLM (llama-server, Qwen2.5-VL-3B Q4_K_M + mmproj GPU offload)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zip
+Group=zip
+# Required Tegra CMA preflight — without these the 800MB mmproj
+# contiguous CUDA allocation fails on a fragmented memory map.
+ExecStartPre=/bin/sh -c '/bin/sync && /bin/echo 3 > /proc/sys/vm/drop_caches && /bin/echo 1 > /proc/sys/vm/compact_memory'
+ExecStart=/home/zip/jarvis-lab/scripts/start_vlm_native.sh
+Restart=on-failure
+RestartSec=5
+# llama-server can take ~40s to load the model+mmproj
+TimeoutStartSec=120
+StandardOutput=append:/home/zip/jarvis-lab/logs/llama-server-native.log
+StandardError=inherit
+
+[Install]
+WantedBy=multi-user.target

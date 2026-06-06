@@ -1,0 +1,22 @@
+[Unit]
+Description=Jarvis dashboard + voice loop + live mode + wake word
+After=jarvis-vlm.service network-online.target sound.target
+Requires=jarvis-vlm.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zip
+Group=zip
+WorkingDirectory=/home/zip/jarvis-lab
+# Wait for VLM /health to respond before starting (max 60s)
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1'
+ExecStart=/usr/bin/python3 /home/zip/jarvis-lab/scripts/jarvis_voice.py
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=90
+StandardOutput=append:/home/zip/jarvis-lab/logs/jarvis_voice.log
+StandardError=inherit
+
+[Install]
+WantedBy=multi-user.target
