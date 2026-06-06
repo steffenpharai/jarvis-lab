@@ -362,7 +362,8 @@ PINS_LOCK = threading.Lock()
 # ----- streaming VLM ----------------------------------------------------------
 def stream_vlm(question: str, frame_jpg: Path,
                cancel: threading.Event, on_token,
-               include_history: bool = True) -> tuple[str, dict]:
+               include_history: bool = True,
+               deadline_s: float = 60.0) -> tuple[str, dict]:
     b64 = base64.b64encode(frame_jpg.read_bytes()).decode()
     with SETTINGS_LOCK:
         sysp = SETTINGS["system_prompt"]
@@ -393,10 +394,33 @@ def stream_vlm(question: str, frame_jpg: Path,
     )
     full = []
     usage = {}
-    resp = urllib.request.urlopen(req, timeout=120)
+    resp = urllib.request.urlopen(req, timeout=15)
+
+    # Watchdog: if cancel fires (user clicked Stop) or the deadline
+    # passes (llama-server got stuck mid-stream), force-close the
+    # response so the urllib read() inside the for-loop fails out
+    # with an exception we can swallow. urllib's timeout=... only
+    # applies to the initial connect / header read; per-chunk reads
+    # are NOT interrupted, hence the explicit watchdog.
+    closed = {"flag": False}
+    def _watchdog() -> None:
+        # wait UP TO deadline_s for cancel; close the socket on either
+        # outcome so the urllib read loop breaks out
+        cancel.wait(deadline_s)
+        closed["flag"] = True
+        try:
+            resp.close()
+        except Exception:
+            pass
+    threading.Thread(target=_watchdog, daemon=True).start()
+    deadline_at = time.monotonic() + deadline_s
+
     try:
         for raw in resp:
             if cancel.is_set():
+                break
+            if time.monotonic() > deadline_at:
+                cancel.set()
                 break
             line = raw.decode().strip()
             if not line.startswith("data:"):
@@ -415,8 +439,15 @@ def stream_vlm(question: str, frame_jpg: Path,
                 continue
             full.append(delta)
             on_token(delta)
+    except Exception:
+        # Watchdog closed the socket; treat as a clean cancellation
+        if not closed["flag"]:
+            raise
     finally:
-        resp.close()
+        try:
+            resp.close()
+        except Exception:
+            pass
     return "".join(full).strip(), usage
 
 
@@ -640,8 +671,17 @@ class LiveMode:
                     "In one short sentence, describe what is happening or "
                     "visible in the scene RIGHT NOW. Be concrete. If nothing "
                     "has notably changed, say what is most salient.",
-                    work / "frame.jpg", cancel, on_tok, include_history=False,
+                    work / "frame.jpg", cancel, on_tok,
+                    include_history=False, deadline_s=25.0,
                 )
+                if not reply:
+                    # watchdog fired; treat as a skipped tick, do not stop
+                    self._broadcast({
+                        "event": "error",
+                        "error": "live observation timed out",
+                        "ts": time.time(),
+                    })
+                    continue
                 obs = {
                     "ts": time.time(),
                     "turn_id": tid,
