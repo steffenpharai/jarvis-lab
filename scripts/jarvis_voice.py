@@ -493,16 +493,17 @@ body {
   display: grid;
   grid-template-rows: auto 1fr;
   height: 100vh;
-  max-width: 980px;
-  margin: 0 auto;
-  padding: 0 16px;
+  width: 100vw;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
 }
 
 .topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 4px;
+  padding: 12px 24px;
   border-bottom: 1px solid var(--border);
 }
 .brand {
@@ -543,7 +544,7 @@ body {
   display: grid;
   grid-template-rows: auto 1fr auto;
   gap: 14px;
-  padding: 14px 0;
+  padding: 14px 24px;
   min-height: 0;
 }
 
@@ -554,7 +555,7 @@ body {
   overflow: hidden;
   background: #000;
   aspect-ratio: 16 / 9;
-  max-height: 320px;
+  max-height: 48vh;
   border: 1px solid var(--border);
 }
 .feed img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -1009,9 +1010,25 @@ textarea#text::placeholder { color: var(--dim); }
 .lightbox.open { display: flex; }
 .lightbox img { max-width: 92vw; max-height: 92vh; border-radius: var(--r-md); }
 
+@media (min-width: 980px) {
+  .main {
+    grid-template-columns: minmax(0, 1.45fr) minmax(380px, 1fr);
+    grid-template-rows: 1fr auto;
+    grid-template-areas:
+      "feed conv"
+      "feed comp";
+    gap: 20px;
+    padding: 16px 24px;
+  }
+  .feed       { grid-area: feed; max-height: none; height: 100%; aspect-ratio: auto; }
+  .feedscroll { grid-area: conv; align-self: stretch; min-height: 0; }
+  .composer   { grid-area: comp; align-self: end; }
+}
+
 @media (max-width: 640px) {
-  .shell { padding: 0 10px; }
-  .feed { max-height: 220px; }
+  .topbar { padding: 12px 14px; }
+  .main { padding: 10px 14px; gap: 10px; }
+  .feed { max-height: 38vh; }
   .bubble.user { max-width: 95%; }
 }
 </style>
