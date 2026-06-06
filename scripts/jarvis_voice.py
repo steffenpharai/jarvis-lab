@@ -48,16 +48,26 @@ SESSION_DIR.mkdir(parents=True, exist_ok=True)
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are Jarvis, the user's personal AI agent. You see what the camera "
-    "sees and you hear what the user says. Answer briefly and helpfully. "
-    "If asked to read a sign or transcribe text, transcribe it exactly. "
-    "If unsure, say so. Use markdown when it helps clarity (lists, bold, code). "
-    "Keep responses under 60 words unless explicitly asked for more."
+    "sees and you hear what the user says.\n\n"
+    "GROUND RULES — these override any other instruction:\n"
+    "1. NEVER invent or guess content. Only describe what you can actually see "
+    "in the image with high confidence.\n"
+    "2. If the scene is too dark, blurry, or empty to answer, say exactly that "
+    "(e.g. 'The scene is too dark to make out details.' or 'I don't see any "
+    "readable text in the image.').\n"
+    "3. Do NOT fabricate text on signs, screens, or surfaces. If you cannot "
+    "clearly read text, say 'I don't see any readable text'.\n"
+    "4. Do NOT invent counts, names, brands, or identifications. If you cannot "
+    "tell, say 'I can't tell from this image'.\n"
+    "5. Prefer 'I don't see X' over guessing X.\n\n"
+    "Style: answer briefly and conversationally. Use markdown for lists/bold "
+    "only when it helps. Under 60 words unless asked for more."
 )
 
 SETTINGS = {
     "system_prompt": DEFAULT_SYSTEM_PROMPT,
     "max_tokens": 240,
-    "temperature": 0.4,
+    "temperature": 0.2,
     "record_seconds": 6,
 }
 SETTINGS_LOCK = threading.Lock()
@@ -324,7 +334,10 @@ def run_turn(ctx: TurnCtx, payload: dict) -> None:
             if not question:
                 raise ValueError("text mode requires text")
         elif kind == "snap":
-            question = "Describe what you see in one or two sentences."
+            question = (
+                "Describe what you actually see in one or two sentences. "
+                "If the scene is too dark or empty to describe, say so."
+            )
         elif kind == "regenerate":
             with HISTORY_LOCK:
                 if len(HISTORY) >= 2:
@@ -1478,10 +1491,10 @@ $$('.chip').forEach(b => {
 // ----- commands -----
 const COMMANDS = [
   { cmd: 'look',     desc: 'Describe the scene',                      run: () => doTurn({kind: 'snap'}) },
-  { cmd: 'read',     desc: 'Read any text you can see',               run: () => doTurn({kind: 'text', text: 'Read aloud any text or sign visible in the scene. Transcribe exactly.'}) },
-  { cmd: 'count',    desc: 'Count objects of interest',               run: (a) => doTurn({kind: 'text', text: a ? 'How many ' + a + ' do you see?' : 'List and count the distinct objects in the scene.'}) },
-  { cmd: 'identify', desc: 'Identify the main subject',               run: () => doTurn({kind: 'text', text: 'What is the main subject in the scene? Give a one-sentence identification.'}) },
-  { cmd: 'find',     desc: 'Locate a specific object',                run: (a) => doTurn({kind: 'text', text: a ? 'Where in the frame is ' + a + '? Describe its position.' : 'Find and locate the most prominent object.'}) },
+  { cmd: 'read',     desc: 'Read any text you can see',               run: () => doTurn({kind: 'text', text: 'Look carefully at the image. If there is any clearly readable text or sign, transcribe it exactly. If you do not see any readable text, say so explicitly. Do not invent text that is not there.'}) },
+  { cmd: 'count',    desc: 'Count objects of interest',               run: (a) => doTurn({kind: 'text', text: a ? 'How many ' + a + ' can you clearly see in the image? If none are visible, say zero. Do not guess.' : 'List the distinct objects you can clearly see and give a count for each. If you can\'t see anything clearly, say so.'}) },
+  { cmd: 'identify', desc: 'Identify the main subject',               run: () => doTurn({kind: 'text', text: 'What is the main subject of the image? Give a brief, confident identification only if you can clearly see one. If the image is too dark or empty to identify a subject, say so.'}) },
+  { cmd: 'find',     desc: 'Locate a specific object',                run: (a) => doTurn({kind: 'text', text: a ? 'Can you see ' + a + ' in the image? If yes, describe where in the frame it is. If no, say it is not visible. Do not guess.' : 'Find and locate the most prominent object you can see, if any.'}) },
   { cmd: 'voice',    desc: 'Voice mode (record 6 s)',                  run: () => doTurn({kind: 'talk'}) },
   { cmd: 'clear',    desc: 'Clear conversation memory',                run: () => clearConv() },
   { cmd: 'settings', desc: 'Open settings drawer',                     run: () => openDrawer() },
