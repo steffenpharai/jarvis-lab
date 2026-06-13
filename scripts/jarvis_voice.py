@@ -38,6 +38,8 @@ from pathlib import Path
 import httpx              # OpenAI / Anthropic SDK pattern: streaming HTTP
 import numpy as np        # audio buffer math + pHash
 
+import jarvis_tools       # tool catalog (registry + handlers)
+
 # ----- paths + constants ------------------------------------------------------
 LAB = Path("/home/zip/jarvis-lab")
 WHISPER_BIN   = LAB / "build/whisper.cpp/build/bin/whisper-cli"
@@ -126,6 +128,8 @@ SETTINGS = {
     "live_interval_s": 8,
     "wake_word_enabled": False,
     "scene_cache_enabled": True,
+    "agent_mode_enabled": False,
+    "agent_max_steps": 3,
 }
 SETTINGS_LOCK = threading.Lock()
 
@@ -148,7 +152,8 @@ class Memory:
         cancelled INTEGER DEFAULT 0,
         created_at REAL NOT NULL,
         is_pinned INTEGER DEFAULT 0,
-        note TEXT
+        note TEXT,
+        agent_meta TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_turns_created ON turns(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_turns_pinned ON turns(is_pinned);
@@ -173,14 +178,26 @@ class Memory:
         self._con.execute("PRAGMA journal_mode=WAL")
         self._con.execute("PRAGMA synchronous=NORMAL")
         self._con.executescript(self.SCHEMA)
+        # idempotent migration for pre-existing DBs
+        try:
+            self._con.execute("ALTER TABLE turns ADD COLUMN agent_meta TEXT")
+        except sqlite3.OperationalError:
+            pass
 
     def record(self, turn: dict) -> None:
+        agent_meta_json = ""
+        if turn.get("agent_mode") or turn.get("agent_steps"):
+            agent_meta_json = json.dumps({
+                "agent_mode": bool(turn.get("agent_mode")),
+                "agent_steps": turn.get("agent_steps") or [],
+            }, default=str)
         with self.lock:
             self._con.execute(
                 """INSERT OR REPLACE INTO turns
                    (turn_id, kind, question, transcription, reply,
-                    frame_path, audio_path, timings_json, cancelled, created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    frame_path, audio_path, timings_json, cancelled,
+                    created_at, agent_meta)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     turn["turn_id"], turn["kind"],
                     turn.get("question") or "",
@@ -191,6 +208,7 @@ class Memory:
                     json.dumps(turn.get("timings") or {}),
                     1 if turn.get("cancelled") else 0,
                     turn.get("ts") or time.time(),
+                    agent_meta_json,
                 ),
             )
 
@@ -199,7 +217,7 @@ class Memory:
             rows = self._con.execute(
                 """SELECT turn_id, kind, question, transcription, reply,
                           frame_path, audio_path, timings_json, cancelled,
-                          created_at, is_pinned, note
+                          created_at, is_pinned, note, agent_meta
                    FROM turns ORDER BY created_at DESC LIMIT ?""",
                 (limit,),
             ).fetchall()
@@ -214,19 +232,18 @@ class Memory:
                     """SELECT t.turn_id, t.kind, t.question, t.transcription,
                               t.reply, t.frame_path, t.audio_path,
                               t.timings_json, t.cancelled, t.created_at,
-                              t.is_pinned, t.note
+                              t.is_pinned, t.note, t.agent_meta
                        FROM turns_fts JOIN turns t ON t.id = turns_fts.rowid
                        WHERE turns_fts MATCH ?
                        ORDER BY t.created_at DESC LIMIT ?""",
                     (q + "*", limit),
                 ).fetchall()
             except sqlite3.OperationalError:
-                # bad fts syntax — fall back to LIKE
                 pat = f"%{q}%"
                 rows = self._con.execute(
                     """SELECT turn_id, kind, question, transcription, reply,
                               frame_path, audio_path, timings_json, cancelled,
-                              created_at, is_pinned, note
+                              created_at, is_pinned, note, agent_meta
                        FROM turns
                        WHERE question LIKE ? OR reply LIKE ?
                        ORDER BY created_at DESC LIMIT ?""",
@@ -246,7 +263,7 @@ class Memory:
             rows = self._con.execute(
                 """SELECT turn_id, kind, question, transcription, reply,
                           frame_path, audio_path, timings_json, cancelled,
-                          created_at, is_pinned, note
+                          created_at, is_pinned, note, agent_meta
                    FROM turns WHERE is_pinned=1
                    ORDER BY created_at DESC""",
             ).fetchall()
@@ -258,6 +275,12 @@ class Memory:
 
     @staticmethod
     def _row(r) -> dict:
+        meta = {}
+        if len(r) > 12 and r[12]:
+            try:
+                meta = json.loads(r[12])
+            except (TypeError, ValueError):
+                meta = {}
         return {
             "turn_id": r[0], "kind": r[1], "question": r[2],
             "transcription": r[3], "reply": r[4], "frame_url": r[5],
@@ -265,6 +288,8 @@ class Memory:
             "timings": json.loads(r[7] or "{}"),
             "cancelled": bool(r[8]), "ts": r[9],
             "is_pinned": bool(r[10]), "note": r[11] or "",
+            "agent_mode": bool(meta.get("agent_mode")),
+            "agent_steps": meta.get("agent_steps") or [],
         }
 
 
@@ -985,13 +1010,62 @@ def run_turn(ctx: TurnCtx, payload: dict) -> None:
             "phase": "audio_segment", **seg,
         }))
 
-        def on_tok(delta: str) -> None:
-            reply_buf.append(delta)
-            ctx.emit({"phase": "token", "delta": delta})
-            tts.add_delta(delta)
+        with SETTINGS_LOCK:
+            agent_on = bool(SETTINGS.get("agent_mode_enabled"))
+            agent_max_steps = int(SETTINGS.get("agent_max_steps", 3))
 
-        reply, usage = stream_vlm(question, work / "frame.jpg",
-                                  ctx.cancel, on_tok)
+        agent_steps: list = []
+        if agent_on:
+            # Agent path: plan -> act -> observe -> re-plan, then TTS the
+            # final answer by sentence chunks (re-using the streaming TTS).
+            def _on_step(step: dict) -> None:
+                agent_steps.append(step)
+                ctx.emit({
+                    "phase": "agent_step",
+                    "step": step.get("step"),
+                    "tool": step.get("tool"),
+                    "args": step.get("args"),
+                    "ok": (step.get("result") or {}).get("ok", False),
+                })
+
+            ctx.emit({"phase": "agent_start", "max_steps": agent_max_steps})
+            try:
+                ar = jarvis_tools.agentic_loop(
+                    jarvis_tools.TOOLS._ctx,
+                    question,
+                    frame_path=work / "frame.jpg",
+                    max_steps=agent_max_steps,
+                    use_frame=True,
+                    on_step=_on_step,
+                )
+            except Exception as ae:
+                ar = {"final": f"(agent error: {ae})", "steps": [],
+                      "stopped": f"error:{type(ae).__name__}",
+                      "usage_total": {}}
+            reply = (ar.get("final") or "").strip()
+            usage = ar.get("usage_total") or {}
+            usage["agent_stopped"] = ar.get("stopped")
+            usage["agent_steps"] = len(ar.get("steps") or [])
+
+            # Chunk the final answer by sentence-ish boundaries so the
+            # existing streaming TTS produces gapless audio.
+            for chunk in re.findall(r"[^.!?\n]+[.!?\n]?", reply):
+                chunk = chunk.strip()
+                if not chunk:
+                    continue
+                reply_buf.append(chunk + " ")
+                ctx.emit({"phase": "token", "delta": chunk + " "})
+                tts.add_delta(chunk + " ")
+                if ctx.cancel.is_set():
+                    break
+        else:
+            def on_tok(delta: str) -> None:
+                reply_buf.append(delta)
+                ctx.emit({"phase": "token", "delta": delta})
+                tts.add_delta(delta)
+
+            reply, usage = stream_vlm(question, work / "frame.jpg",
+                                      ctx.cancel, on_tok)
         timings["vlm_s"] = round(time.monotonic() - t, 2); t = time.monotonic()
 
         if ctx.cancel.is_set():
@@ -1024,6 +1098,8 @@ def run_turn(ctx: TurnCtx, payload: dict) -> None:
             "frame_reused": cap.get("reused", False),
             "scene_changed": cap.get("scene_changed", True),
             "segments": list(tts.segments),
+            "agent_mode": agent_on,
+            "agent_steps": agent_steps,
             "ts": time.time(),
         }
         # Persist
@@ -1232,6 +1308,8 @@ def gather_metrics() -> dict:
         "live_observations": len(LIVE.observations),
         "wake_enabled": WAKE.enabled,
         "wake_score": round(WAKE.score, 3) if WAKE.enabled else 0.0,
+        "agent_mode_enabled": bool(SETTINGS.get("agent_mode_enabled")),
+        "tool_count": len(jarvis_tools.TOOLS.catalog()),
     }
 
 
@@ -1372,6 +1450,26 @@ class H(BaseHTTPRequestHandler):
         finally:
             LIVE.unsubscribe(q)
 
+    def _stream_notifications(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        q = jarvis_tools.TOOLS.subscribe_notifications()
+        try:
+            while True:
+                try:
+                    ev = q.get(timeout=20)
+                except queue.Empty:
+                    self.wfile.write(b": keepalive\n\n"); self.wfile.flush(); continue
+                self.wfile.write(("data: " + json.dumps(ev) + "\n\n").encode())
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            jarvis_tools.TOOLS.unsubscribe_notifications(q)
+
     def do_GET(self):
         p = self.path
         if p == "/":
@@ -1435,6 +1533,76 @@ class H(BaseHTTPRequestHandler):
         elif p.startswith("/frame/"):
             tid = p.split("/")[-1].replace(".jpg", "")
             self._send_file(SESSION_DIR / tid / "frame.jpg", "image/jpeg")
+        elif p == "/tools":
+            self._send_json(200, {"tools": jarvis_tools.TOOLS.catalog()})
+        elif p.startswith("/tools/calls"):
+            # recent tool-call audit log
+            limit = 50
+            if "?" in p:
+                from urllib.parse import parse_qs
+                qs = parse_qs(p.split("?", 1)[1])
+                try:
+                    limit = max(1, min(500, int(qs.get("limit", ["50"])[0])))
+                except ValueError:
+                    pass
+            with MEMORY.lock:
+                rows = MEMORY._con.execute(
+                    "SELECT name, args_json, result_json, ok, ms, created_at "
+                    "FROM tool_calls ORDER BY created_at DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            self._send_json(200, {"items": [
+                {"name": r[0], "args": json.loads(r[1] or "null"),
+                 "result": json.loads(r[2] or "null"),
+                 "ok": bool(r[3]), "ms": r[4], "ts": r[5]}
+                for r in rows
+            ]})
+        elif p.startswith("/audio_tool/"):
+            # /audio_tool/<dir>/<file>.wav  served from session_dir/tools/<dir>/<file>
+            parts = p.split("/")
+            if len(parts) >= 4:
+                d = parts[2]; f = parts[3]
+                # strict: no traversal
+                if "/" in d or ".." in d or "/" in f or ".." in f:
+                    self.send_response(400); self.end_headers(); return
+                self._send_file(SESSION_DIR / "tools" / d / f, "audio/wav")
+            else:
+                self.send_response(404); self.end_headers()
+        elif p == "/reminders":
+            with MEMORY.lock:
+                rows = MEMORY._con.execute(
+                    "SELECT id, text, fire_at, fired, fired_at FROM reminders "
+                    "ORDER BY fire_at DESC LIMIT 200",
+                ).fetchall()
+            self._send_json(200, {"items": [
+                {"id": r[0], "text": r[1], "fire_at": r[2],
+                 "fired": bool(r[3]), "fired_at": r[4]}
+                for r in rows
+            ]})
+        elif p.startswith("/notifications"):
+            since = 0
+            if "?" in p:
+                from urllib.parse import parse_qs
+                qs = parse_qs(p.split("?", 1)[1])
+                try:
+                    since = int(qs.get("since_id", ["0"])[0])
+                except ValueError:
+                    pass
+            self._send_json(200, {
+                "items": jarvis_tools.TOOLS.notifications(since_id=since),
+            })
+        elif p == "/events/notifications":
+            self._stream_notifications()
+        elif p.startswith("/audio_note/"):
+            # /audio_note/reminder-<id>.wav  served from session_dir/notifications/
+            parts = p.split("/")
+            if len(parts) >= 3:
+                f = parts[2]
+                if "/" in f or ".." in f:
+                    self.send_response(400); self.end_headers(); return
+                self._send_file(SESSION_DIR / "notifications" / f, "audio/wav")
+            else:
+                self.send_response(404); self.end_headers()
         else:
             self.send_response(404); self.end_headers()
 
@@ -1449,7 +1617,8 @@ class H(BaseHTTPRequestHandler):
             with SETTINGS_LOCK:
                 for k in ("system_prompt", "preset", "max_tokens", "temperature",
                           "record_seconds", "live_interval_s",
-                          "scene_cache_enabled"):
+                          "scene_cache_enabled",
+                          "agent_mode_enabled", "agent_max_steps"):
                     if k in payload:
                         SETTINGS[k] = payload[k]
             if "wake_word_enabled" in payload:
@@ -1510,6 +1679,14 @@ class H(BaseHTTPRequestHandler):
         elif p == "/wake/stop":
             ok = set_wake_enabled(False)
             self._send_json(200, {"ok": ok, "enabled": WAKE.enabled})
+        elif p == "/agent/enable":
+            with SETTINGS_LOCK:
+                SETTINGS["agent_mode_enabled"] = True
+            self._send_json(200, {"agent_mode_enabled": True})
+        elif p == "/agent/disable":
+            with SETTINGS_LOCK:
+                SETTINGS["agent_mode_enabled"] = False
+            self._send_json(200, {"agent_mode_enabled": False})
         elif p.startswith("/memory/") and p.endswith("/pin"):
             tid = p.split("/")[2]
             MEMORY.set_pin(tid, True)
@@ -1518,6 +1695,56 @@ class H(BaseHTTPRequestHandler):
             tid = p.split("/")[2]
             MEMORY.set_pin(tid, False)
             self._send_json(200, {"ok": True})
+        elif p == "/agent":
+            # POST /agent  body: {question, max_steps?, use_frame?}
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                payload = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "bad json"}); return
+            question = (payload.get("question") or "").strip()
+            if not question:
+                self._send_json(400, {"error": "question required"}); return
+            max_steps = max(1, min(8, int(payload.get("max_steps", 3))))
+            # use_frame defaults to "auto" — heuristic on the question text.
+            use_frame = payload.get("use_frame", "auto")
+            try:
+                result = jarvis_tools.run_agent(
+                    question, max_steps=max_steps, use_frame=use_frame,
+                )
+                self._send_json(200, result)
+            except Exception as e:  # noqa: BLE001
+                self._send_json(500, {
+                    "error": str(e), "type": type(e).__name__,
+                })
+        elif p.startswith("/tool/"):
+            # /tool/<name>?confirm=1   body: {args: {...}}
+            from urllib.parse import urlsplit, parse_qs
+            sp = urlsplit(p)
+            name = sp.path[len("/tool/"):]
+            qs = parse_qs(sp.query or "")
+            confirmed = (qs.get("confirm", ["0"])[0] in ("1", "true", "yes"))
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                payload = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "bad json"}); return
+            args = payload.get("args", payload) or {}
+            t0 = time.monotonic()
+            result = jarvis_tools.TOOLS.call(name, args, confirmed=confirmed)
+            ms = round((time.monotonic() - t0) * 1000.0, 1)
+            try:
+                jarvis_tools.TOOLS.log_call(MEMORY, name, args, result, ms)
+            except Exception:
+                pass
+            status = 200 if result.get("ok") else (
+                403 if "requires confirmation" in (result.get("error") or "")
+                else 400
+            )
+            result["ms"] = ms
+            self._send_json(status, result)
         else:
             self.send_response(404); self.end_headers()
 
@@ -1534,6 +1761,33 @@ def main():
     AUDIO.start()
     AUDIO_MONITOR.start()
     threading.Thread(target=_vlm_health_poller, daemon=True).start()
+
+    # wire up the tool registry
+    jarvis_tools.TOOLS.migrate(MEMORY)
+    jarvis_tools.TOOLS.set_context(jarvis_tools.ToolContext(
+        memory=MEMORY,
+        camera=CAMERA,
+        audio=AUDIO,
+        live=LIVE,
+        wake=WAKE,
+        settings=SETTINGS,
+        settings_lock=SETTINGS_LOCK,
+        presets=PRESETS,
+        set_wake_enabled=set_wake_enabled,
+        capture_frame=capture_frame_for_vlm,
+        stream_vlm=stream_vlm,
+        transcribe=transcribe,
+        synthesize=synthesize,
+        record_voice=record_voice_via_bus,
+        lab_root=LAB,
+        session_dir=SESSION_DIR,
+        vlm_w=VLM_W, vlm_h=VLM_H,
+        cam_w=CAM_W, cam_h=CAM_H,
+        mic_device=MIC_DEVICE,
+    ))
+    jarvis_tools.TOOLS.start_reminder_loop(MEMORY)
+    print(f"jarvis: {len(jarvis_tools.TOOLS.catalog())} tools registered", flush=True)
+
     print(f"jarvis listening on http://{LISTEN_HOST}:{LISTEN_PORT}/", flush=True)
     JarvisServer((LISTEN_HOST, LISTEN_PORT), H).serve_forever()
 
