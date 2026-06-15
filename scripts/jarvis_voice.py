@@ -409,6 +409,34 @@ class Memory:
             return self._con.execute(
                 "SELECT COUNT(*) FROM visual_memory").fetchone()[0]
 
+    def vmem_entities(self, scan_rows: int = 150) -> list[dict]:
+        """Object-centric registry: aggregate the captioner's per-keyframe object
+        lists into distinct entities with sighting count + last-seen + a frame."""
+        with self.lock:
+            rows = self._con.execute(
+                "SELECT ts, objects, frame_file FROM visual_memory "
+                "WHERE objects != '' ORDER BY ts DESC LIMIT ?", (scan_rows,),
+            ).fetchall()
+        agg: dict[str, dict] = {}
+        for ts, objs, frame in rows:
+            seen_here = set()
+            for o in (objs or "").split(","):
+                label = re.sub(r"[^a-z0-9 ]", "", o.strip().lower()).strip()
+                if len(label) < 2 or label in seen_here:
+                    continue
+                seen_here.add(label)
+                e = agg.get(label)
+                furl = f"/vmem/{frame}" if frame else ""
+                if e is None:
+                    agg[label] = {"label": label, "count": 1,
+                                  "last_ts": ts, "frame_url": furl}
+                else:
+                    e["count"] += 1
+                    if ts > e["last_ts"]:
+                        e["last_ts"] = ts
+                        e["frame_url"] = furl
+        return sorted(agg.values(), key=lambda e: e["last_ts"], reverse=True)
+
     @staticmethod
     def _vrow(r) -> dict:
         return {"id": r[0], "ts": r[1], "caption": r[2] or "",
@@ -1921,6 +1949,12 @@ class H(BaseHTTPRequestHandler):
             self._send_json(200, {"items": MEMORY.search(q, 50), "q": q})
         elif p == "/memory/pinned":
             self._send_json(200, {"items": MEMORY.pinned()})
+        elif p == "/memory/entities":
+            ents = MEMORY.vmem_entities()
+            # surface the most-sighted entities first, then most-recent — keeps
+            # the registry focused (free-text object lists are noisy).
+            ents.sort(key=lambda e: (e["count"], e["last_ts"]), reverse=True)
+            self._send_json(200, {"entities": ents[:60], "count": len(ents)})
         elif p == "/watch/rules":
             self._send_json(200, {"rules": MEMORY.watch_list()})
         elif p == "/memory/visual/recent":

@@ -9,9 +9,13 @@ Wants=jarvis-vlm.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+Environment=HOME=/home/zip
 # Wait for the VLM to be healthy before grabbing any GPU.
-ExecStartPre=/bin/sh -c 'for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1 && exit 0; sleep 3; done; exit 0'
-ExecStart=/home/zip/jarvis-lab/scripts/run_owl_sidecar.sh
+# Wait for the VLM to be healthy, then free reclaimable RAM (OWL co-resident on
+# 8GB is tight; the prior container was OOM-killed). Run via bash so a missing
+# exec bit (git checkout) can't break startup.
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1 && break; sleep 3; done; sync; echo 1 > /proc/sys/vm/drop_caches 2>/dev/null || true'
+ExecStart=/bin/bash /home/zip/jarvis-lab/scripts/run_owl_sidecar.sh
 ExecStop=/usr/bin/docker stop owl-sidecar
 TimeoutStartSec=600
 

@@ -1050,6 +1050,15 @@ textarea#text::placeholder { color: var(--dim); }
 .act-item .act-name { color: var(--accent); font-weight: 600; }
 .act-item .act-args { color: var(--muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .act-item .act-ms { color: var(--dim); font-variant-numeric: tabular-nums; }
+/* entity registry (object-centric) */
+.ent-row { display: flex; align-items: center; gap: 10px; padding: 7px 6px; border-bottom: 1px solid var(--border); cursor: pointer; transition: 120ms; }
+.ent-row:hover { background: var(--bg); }
+.ent-thumb { width: 40px; height: 40px; object-fit: cover; border-radius: var(--r-sm); flex-shrink: 0; border: 1px solid var(--border); }
+.ent-body { min-width: 0; flex: 1; }
+.ent-name { font: 600 13px/1.3 'Geist', sans-serif; text-transform: capitalize; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ent-meta { font: 500 10.5px/1.4 'Geist Mono', monospace; color: var(--muted); margin-top: 1px; }
+.ent-go { background: transparent; border: 1px solid var(--border); color: var(--accent); width: 26px; height: 26px; border-radius: var(--r-sm); cursor: pointer; flex-shrink: 0; font-size: 14px; }
+.ent-row:hover .ent-go { border-color: var(--accent-soft); background: var(--accent-soft); }
 </style>
 
 <body>
@@ -1157,6 +1166,7 @@ textarea#text::placeholder { color: var(--dim); }
     </div>
     <div class=rightcol-tabs role=tablist>
       <button class='tab active' data-pane=conv role=tab>Talk</button>
+      <button class='tab' data-pane=entities role=tab>Entities <span class=tab-badge id=ent-count>0</span></button>
       <button class='tab' data-pane=activity role=tab>Activity</button>
       <button class='tab' data-pane=tools role=tab>Tools <span class=tab-badge id=tools-count>0</span></button>
       <button class='tab' data-pane=seen role=tab>Seen <span class=tab-badge id=seen-count>0</span></button>
@@ -1174,6 +1184,10 @@ textarea#text::placeholder { color: var(--dim); }
       <div class=empty id=live-empty>
         Live mode is off. Press <span class=kbd>L</span> or tap the Live button on the feed to start. Jarvis narrates the scene every few seconds, skipping when nothing changes.
       </div>
+    </div>
+    <div class='pane hidden' id=pane-entities>
+      <div class=empty id=entities-empty>No entities yet — Jarvis registers what it sees as the scene changes.</div>
+      <div id=entities-list></div>
     </div>
     <div class='pane hidden' id=pane-activity>
       <div class=empty id=activity-empty>No tool activity yet. Jarvis logs every tool call here.</div>
@@ -1414,7 +1428,31 @@ function switchPane(name) {
   if (name === 'seen') loadSeen();
   if (name === 'tools') loadTools();
   if (name === 'activity') loadActivity();
+  if (name === 'entities') loadEntities();
 }
+
+/* ===== entity registry (Palantir object-centric core) ===== */
+async function loadEntities() {
+  try {
+    const j = await (await fetch('/memory/entities')).json();
+    const ents = j.entities || [];
+    const ec = $('#ent-count'); if (ec) ec.textContent = ents.length;
+    const emp = $('#entities-empty'); if (emp) emp.style.display = ents.length ? 'none' : '';
+    $('#entities-list').innerHTML = ents.map(e =>
+      '<div class=ent-row data-label="' + escapeHtml(e.label) + '">' +
+        '<img class=ent-thumb src="' + (e.frame_url || '/snapshot.jpg') + '" loading=lazy alt="">' +
+        '<div class=ent-body><div class=ent-name>' + escapeHtml(e.label) + '</div>' +
+          '<div class=ent-meta>seen ' + e.count + '× · ' + _ago(e.last_ts) + '</div></div>' +
+        '<button class=ent-go title="Investigate this">→</button>' +
+      '</div>'
+    ).join('');
+  } catch (e) { /* ignore */ }
+}
+$('#entities-list') && $('#entities-list').addEventListener('click', (ev) => {
+  const row = ev.target.closest('.ent-row'); if (!row) return;
+  const label = row.dataset.label; if (!label || isStreaming) return;
+  doInvestigate({ subject: label });   // object-centric pivot: inspect the entity
+});
 
 /* ===== capability catalog + activity ledger (transparency) ===== */
 async function loadTools(q = '') {
@@ -1509,6 +1547,8 @@ async function tickMetrics() {
     if (intelO && intelO.classList.contains('open')) {
       const ap = document.getElementById('pane-activity');
       if (ap && !ap.classList.contains('hidden')) loadActivity();
+      const ep = document.getElementById('pane-entities');
+      if (ep && !ep.classList.contains('hidden')) loadEntities();
     }
     const tele = $('#teleHint');
     if (tele) tele.innerHTML =
