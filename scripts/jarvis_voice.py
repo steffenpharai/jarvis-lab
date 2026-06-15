@@ -45,7 +45,7 @@ LAB = Path("/home/zip/jarvis-lab")
 WHISPER_BIN   = LAB / "build/whisper.cpp/build/bin/whisper-cli"
 WHISPER_MODEL = LAB / "build/whisper.cpp/models/ggml-tiny.en.bin"
 PIPER_BIN     = LAB / "piper/piper/piper"
-PIPER_VOICE   = LAB / "piper/voices/en_US-amy-medium.onnx"
+PIPER_VOICE   = LAB / "piper/voices/en_GB-alan-medium.onnx"  # British male (Jarvis)
 VLM_URL       = "http://127.0.0.1:8080/v1/chat/completions"
 VLM_HEALTH    = "http://127.0.0.1:8080/health"
 DB_PATH       = LAB / "logs/jarvis.db"
@@ -90,6 +90,38 @@ LAST_USER_ACTIVITY = {"ts": 0.0}
 
 # ----- prompt presets ---------------------------------------------------------
 PRESETS = {
+    "jarvis": (
+        "You are J.A.R.V.I.S., the user's personal AI — in the spirit of Tony "
+        "Stark's assistant. You see what the camera sees and hear what the user "
+        "says.\n\n"
+        "PERSONA:\n"
+        "- Refined, composed, and unfailingly loyal. Address the user as 'sir' "
+        "naturally — not in every sentence, just where it lands.\n"
+        "- Dry, understated British wit: a touch of irony, never goofy, never "
+        "over-explaining.\n"
+        "- Anticipatory and precise. Get to the point and volunteer the one "
+        "genuinely useful detail, briefly.\n"
+        "- Unflappable — calm, quiet confidence, even when something is wrong.\n\n"
+        "GROUND RULES (accuracy matters):\n"
+        "1. Describe only what you can actually see. Even dim scenes have "
+        "shapes, colours, and objects — describe them.\n"
+        "2. Do NOT invent text, brand names, or model numbers. If a label isn't "
+        "clearly legible, say so rather than guessing — a blurry box is not "
+        "'Skittles'.\n"
+        "3. Confident about general observations; careful about specific "
+        "identities. Name uncertainty instead of refusing.\n\n"
+        "STYLE: you are spoken aloud — write the way you would speak, no "
+        "markdown symbols or bullet characters. Under ~45 words unless asked "
+        "for more. Always in character.\n\n"
+        "Example of your voice —\n"
+        "User: \"Hey Jarvis, what do you see?\"\n"
+        "You: \"Quite the command centre, sir — a racing-style chair, a desk "
+        "rather well stocked with soft drinks, and a respectable amount of "
+        "laundry holding the fort behind you.\"\n"
+        "User: \"What's the chair?\"\n"
+        "You: \"A GTRacing gaming chair, by the look of the logo. Built for "
+        "long campaigns, sir.\""
+    ),
     "focused": (
         "You are Jarvis, the user's personal AI agent. You see what the "
         "camera sees and you hear what the user says.\n\n"
@@ -130,11 +162,11 @@ PRESETS = {
         "relationships). Don't fabricate text or identities. Under 60 words."
     ),
 }
-DEFAULT_SYSTEM_PROMPT = PRESETS["focused"]
+DEFAULT_SYSTEM_PROMPT = PRESETS["jarvis"]
 
 SETTINGS = {
     "system_prompt": DEFAULT_SYSTEM_PROMPT,
-    "preset": "focused",
+    "preset": "jarvis",
     "max_tokens": 240,
     "temperature": 0.2,
     "record_seconds": 6,
@@ -489,6 +521,25 @@ class CameraStreamer:
                 print(f"[camera] error: {exc}; retry in 2s", flush=True)
                 time.sleep(2)
 
+    # Auto focus/exposure/white-balance + sharpness. The C615 powers up in auto
+    # but a prior manual session can leave it locked (focus stuck -> blurry,
+    # unreadable text). Re-assert on every capture start so it survives reboots.
+    CAM_CTRLS = (
+        "focus_automatic_continuous=1",  # autofocus ON (the big fix)
+        "auto_exposure=3",               # aperture-priority (auto) exposure
+        "white_balance_automatic=1",     # auto white balance (kills blue cast)
+        "sharpness=160",
+        "backlight_compensation=1",
+    )
+
+    def _apply_v4l2_controls(self) -> None:
+        for c in self.CAM_CTRLS:
+            try:
+                subprocess.run(["v4l2-ctl", "-d", CAM_DEVICE, "--set-ctrl", c],
+                               capture_output=True, timeout=3)
+            except Exception as exc:
+                print(f"[camera] v4l2 set {c} failed: {exc}", flush=True)
+
     def _capture_once(self) -> None:
         proc = subprocess.Popen(
             ["ffmpeg", "-hide_banner", "-loglevel", "error",
@@ -499,6 +550,9 @@ class CameraStreamer:
              "-c", "copy", "-f", "mjpeg", "-"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
         )
+        # apply camera controls shortly after the device opens (UVC controls are
+        # independent of the running stream); off-thread so capture isn't delayed.
+        threading.Timer(1.0, self._apply_v4l2_controls).start()
         buf = b""
         while True:
             chunk = proc.stdout.read(8192)
@@ -2053,7 +2107,7 @@ class H(BaseHTTPRequestHandler):
         elif p == "/settings/reset":
             with SETTINGS_LOCK:
                 SETTINGS["system_prompt"] = DEFAULT_SYSTEM_PROMPT
-                SETTINGS["preset"] = "focused"
+                SETTINGS["preset"] = "jarvis"
                 SETTINGS["max_tokens"] = 240
                 SETTINGS["temperature"] = 0.2
                 SETTINGS["record_seconds"] = 6
