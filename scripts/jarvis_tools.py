@@ -2741,6 +2741,34 @@ def _render_region(ctx: ToolContext, raw_jpg: bytes, out_jpg: Path,
     }
 
 
+OWL_URL = os.environ.get("OWL_URL", "http://127.0.0.1:8086")
+
+
+def _owl_available() -> bool:
+    try:
+        r = HTTP.get(OWL_URL + "/health",
+                     timeout=httpx.Timeout(2.0, connect=1.0))
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+def _owl_detect(jpg_path: Path, query: str, threshold: float = 0.1) -> dict | None:
+    """Open-vocab detect via the NanoOWL sidecar. Returns the best detection
+    {label, score, bbox:[x,y,w,h]} or None (also None if sidecar is down)."""
+    try:
+        b64 = base64.b64encode(Path(jpg_path).read_bytes()).decode()
+        r = HTTP.post(OWL_URL + "/detect",
+                      json={"image_b64": b64, "query": query,
+                            "threshold": threshold},
+                      timeout=httpx.Timeout(20.0, connect=2.0))
+        if r.status_code == 200:
+            return r.json().get("best")
+    except Exception:
+        return None
+    return None
+
+
 _GRID_COLS, _GRID_ROWS = 4, 3
 
 
@@ -2977,10 +3005,24 @@ def run_investigate(ctx: ToolContext, *, subject: str = "", point=None,
                 min(side, 1.0 - bbox[1]))
         locate_method = "point"
     elif subject:
-        found = _grid_locate(ctx, subject, full)
-        if found:
-            bbox = found
-            locate_method = "grid"
+        # Prefer precise open-vocab detection (NanoOWL) when the sidecar is up;
+        # fall back to VLM grid-cell voting. Detect on the enhanced full frame
+        # (better recall in dim scenes).
+        best = _owl_detect(full, subject, threshold=0.1)
+        if best and best.get("bbox") and best.get("score", 0) >= 0.1:
+            bx = best["bbox"]
+            # pad the tight detector box ~15% so the zoom keeps context
+            px, py, pw, ph = bx
+            bbox = (max(0.0, px - pw * 0.15), max(0.0, py - ph * 0.15),
+                    min(1.0, pw * 1.3), min(1.0, ph * 1.3))
+            locate_method = "owl"
+            emit({"phase": "detect", "label": best.get("label"),
+                  "score": best.get("score")})
+        else:
+            found = _grid_locate(ctx, subject, full)
+            if found:
+                bbox = found
+                locate_method = "grid"
     emit({"phase": "located", "bbox": list(bbox) if bbox else None,
           "method": locate_method})
 
@@ -3089,6 +3131,49 @@ def investigate(ctx, subject: str = "", web: bool = True) -> dict:
                       "extract": (wiki.get("extract") or "")[:600]},
         "web_results": [{"title": h.get("title"), "url": h.get("url")}
                         for h in hits[:3]],
+    }
+
+
+@tool(
+    "detect_objects",
+    description="Open-vocabulary object detection: find ANY objects you name in "
+                "the current camera view and return their locations (bounding "
+                "boxes). Real-time NanoOWL detector. Use to locate/count/track "
+                "specific things, e.g. 'person, dog, cup' or 'red car'.",
+    category="vision",
+    schema={
+        "type": "object",
+        "properties": {
+            "query": {"type": "string",
+                      "description": "comma-separated things to find, "
+                                     "e.g. 'person, laptop, coffee cup'"},
+            "threshold": {"type": "number",
+                          "description": "confidence 0-1 (default 0.1)"},
+        },
+        "required": ["query"],
+    },
+    needs_ctx=True,
+)
+def detect_objects(ctx, query: str, threshold: float = 0.1) -> dict:
+    if not _owl_available():
+        raise ToolError("open-vocab detector (NanoOWL sidecar) is not running")
+    snap = _tmp_jpg(ctx, "owl")
+    ctx.capture_frame(snap, allow_reuse=False)
+    try:
+        b64 = base64.b64encode(snap.read_bytes()).decode()
+        r = HTTP.post(OWL_URL + "/detect",
+                      json={"image_b64": b64, "query": query,
+                            "threshold": float(threshold)},
+                      timeout=httpx.Timeout(20.0, connect=2.0))
+        r.raise_for_status()
+        j = r.json()
+    except Exception as e:  # noqa: BLE001
+        raise ToolError(f"detect failed: {e}")
+    dets = j.get("detections", [])
+    return {
+        "query": query, "count": len(dets), "frame": str(snap),
+        "detections": [{"label": d["label"], "score": d["score"],
+                        "bbox": d["bbox"]} for d in dets[:15]],
     }
 
 
@@ -3246,9 +3331,9 @@ DEFAULT_AGENT_ALLOW: set[str] = {
     "github_repo", "currency_rate", "dns", "is_online", "arxiv",
     "rss_fetch", "summarize_page", "pdf_to_text", "whois",
     # vision
-    "investigate", "zoom_into", "read_all_text", "multi_frame_compare",
-    "track_object", "depth_of", "timelapse", "research_visual",
-    "read_barcode", "barcode_lookup",
+    "investigate", "detect_objects", "zoom_into", "read_all_text",
+    "multi_frame_compare", "track_object", "depth_of", "timelapse",
+    "research_visual", "read_barcode", "barcode_lookup",
     # cloud escalation (Sprint B) — opt-in; only fires if keys are configured
     "ask_claude", "ask_gpt", "ask_gemini", "escalate",
     # memory
