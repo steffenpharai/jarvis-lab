@@ -931,7 +931,8 @@ textarea#text::placeholder { color: var(--dim); }
 
 /* ephemeral conversation captions over the stage */
 .say {
-  position: fixed; left: 50%; transform: translateX(-50%); bottom: 150px;
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: calc(var(--dock-h, 150px) + 44px);
   width: min(760px, 88vw); text-align: center; z-index: 9; pointer-events: none;
 }
 .sayuser {
@@ -946,7 +947,7 @@ textarea#text::placeholder { color: var(--dim); }
   opacity: 0; transition: opacity .3s var(--ease-out); max-height: 32vh; overflow: hidden;
 }
 .sayjarvis.show { opacity: 1; }
-.live-caption { bottom: 150px !important; left: 50% !important; right: auto !important;
+.live-caption { bottom: calc(var(--dock-h, 150px) + 44px) !important; left: 50% !important; right: auto !important;
   transform: translateX(-50%); width: min(760px, 88vw); }
 
 /* right intel rail (collapsible, hidden by default) */
@@ -978,7 +979,6 @@ textarea#text::placeholder { color: var(--dim); }
   .intel { right: 6px; left: 6px; width: auto; bottom: 150px; }
   .composer.dock { width: 96vw; }
   .presence, .talkbtn { top: 33% !important; }
-  .say, .live-caption { bottom: 158px; }
 }
 </style>
 
@@ -2068,6 +2068,15 @@ function openIntel(pane) { if (intelEl) { intelEl.classList.add('open'); intelEl
 function closeIntel() { if (intelEl) { intelEl.classList.remove('open'); intelEl.setAttribute('aria-hidden', 'true'); } }
 $('#intelbtn').onclick = () => { intelEl.classList.contains('open') ? closeIntel() : openIntel(); };
 $('#intelclose').onclick = closeIntel;
+
+// keep the on-stage captions docked just above the command bar, whatever its height
+(function trackDockHeight() {
+  const dock = $('#composer');
+  if (!dock) return;
+  const setH = () => document.documentElement.style.setProperty('--dock-h', dock.offsetHeight + 'px');
+  setH();
+  new ResizeObserver(setH).observe(dock);
+})();
 
 /* ===== click-on-feed ===== */
 liveimg.addEventListener('click', (e) => {
