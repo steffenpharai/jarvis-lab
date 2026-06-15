@@ -95,6 +95,16 @@
 }
 /* keep feed chrome above the FX texture overlay */
 .hud-pill, .live-toggle, .wake-pill { z-index: 5; }
+/* always-on targeting frame — corner brackets read instantly as "HUD" */
+.hudframe { position: absolute; inset: 14px; z-index: 2; pointer-events: none; }
+.hudframe .hc { position: absolute; width: 26px; height: 26px; opacity: 0.5;
+  border: 2px solid var(--accent); }
+.hudframe .hc.tl { left: 0; top: 0; border-right: 0; border-bottom: 0; }
+.hudframe .hc.tr { right: 0; top: 0; border-left: 0; border-bottom: 0; }
+.hudframe .hc.bl { left: 0; bottom: 0; border-right: 0; border-top: 0; }
+.hudframe .hc.br { right: 0; bottom: 0; border-left: 0; border-top: 0; }
+/* entity-track overlay (Lattice-style detection boxes drawn on the world view) */
+.tracks { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 3; pointer-events: none; }
 /* three.js holographic voice-presence orb (top-center of the feed) */
 .presence {
   position: absolute; top: 6px; left: 50%; transform: translateX(-50%);
@@ -1011,6 +1021,10 @@ textarea#text::placeholder { color: var(--dim); }
       </div>
       <canvas class=presence id=presence title='Jarvis presence'></canvas>
       <div class=feed-fx aria-hidden=true></div>
+      <div class=hudframe aria-hidden=true>
+        <span class='hc tl'></span><span class='hc tr'></span><span class='hc bl'></span><span class='hc br'></span>
+      </div>
+      <svg class=tracks id=tracks viewBox='0 0 1000 1000' preserveAspectRatio=none></svg>
       <div class='hud-pill hud-tl livepill idle' id=livepill><span class=dot></span> idle</div>
       <div class='hud-pill hud-tr' id=hudtr><span>0.0 fps</span><span class=hud-sep>·</span><span class='hud-val'>—</span></div>
       <div class='hud-pill hud-bl' id=hudbl>qwen2.5-vl-3b · 640&times;480</div>
@@ -1077,6 +1091,7 @@ textarea#text::placeholder { color: var(--dim); }
         <button class=chip data-cmd=count><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M4 4h4v4H4zM10 4h4v4h-4zM16 4h4v4h-4zM4 10h4v4H4zM10 10h4v4h-4zM16 10h4v4h-4zM4 16h4v4H4zM10 16h4v4h-4zM16 16h4v4h-4z'/></svg>Count objects</button>
         <button class=chip data-cmd=identify><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='10'/><path d='M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3'/><path d='M12 17h.01'/></svg>What am I looking at</button>
         <button class='chip chip-inv' data-cmd=investigate title='Zoom in, identify, and look it up on the web'><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='11' cy='11' r='7'/><path d='m21 21-4.3-4.3'/><path d='M11 8v6M8 11h6'/></svg>Investigate &amp; zoom</button>
+        <button class='chip' data-cmd=scan title='Detect & track all entities in view (open-vocab)'><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2'/><line x1='3' y1='12' x2='21' y2='12'/></svg>Scan field</button>
       </div>
       <div class=input-row>
         <div class=orb-wrap id=orbwrap>
@@ -1748,6 +1763,58 @@ function showReticle(bbox, locked, label) {
 }
 function hideReticle() { reticle.classList.remove('on', 'locked'); }
 
+/* ===== entity tracks (Lattice-style detection boxes on the world view) ===== */
+const tracksEl = $('#tracks');
+function trackColor(score) { return score >= 0.4 ? '#38bdf8' : (score >= 0.2 ? '#f5a30b' : '#c15f3c'); }
+function clearTracks() { if (tracksEl) tracksEl.innerHTML = ''; }
+function drawTracks(dets, ttl) {
+  if (!tracksEl) return;
+  clearTracks();
+  const NS = 'http://www.w3.org/2000/svg';
+  (dets || []).forEach(d => {
+    const b = d.bbox || d.box_xyxy; if (!b) return;
+    const x = b[0] * 1000, y = b[1] * 1000, w = (d.bbox ? b[2] : (b[2]-b[0])) * 1000, h = (d.bbox ? b[3] : (b[3]-b[1])) * 1000;
+    const col = trackColor(d.score || 0.5);
+    const g = document.createElementNS(NS, 'g');
+    const k = 18; // corner bracket length (viewBox units)
+    const corners = [
+      `M${x} ${y+k} V${y} H${x+k}`, `M${x+w-k} ${y} H${x+w} V${y+k}`,
+      `M${x+w} ${y+h-k} V${y+h} H${x+w-k}`, `M${x+k} ${y+h} H${x} V${y+h-k}`,
+    ];
+    corners.forEach(dd => { const p = document.createElementNS(NS,'path'); p.setAttribute('d', dd);
+      p.setAttribute('stroke', col); p.setAttribute('stroke-width','3'); p.setAttribute('fill','none'); g.appendChild(p); });
+    const rect = document.createElementNS(NS,'rect');
+    rect.setAttribute('x',x); rect.setAttribute('y',y); rect.setAttribute('width',w); rect.setAttribute('height',h);
+    rect.setAttribute('fill', col); rect.setAttribute('opacity','0.06'); rect.setAttribute('stroke', col);
+    rect.setAttribute('stroke-width','1'); rect.setAttribute('stroke-dasharray','2 4'); g.appendChild(rect);
+    // label chip (uses a foreignObject-free approach: text + bg rect)
+    const label = (d.label || 'object').toUpperCase() + (d.score ? '  ' + Math.round(d.score*100) + '%' : '');
+    const tw = label.length * 9 + 14;
+    const lbg = document.createElementNS(NS,'rect');
+    lbg.setAttribute('x',x); lbg.setAttribute('y', Math.max(0,y-26)); lbg.setAttribute('width', tw); lbg.setAttribute('height',22);
+    lbg.setAttribute('fill','rgba(8,8,10,0.82)'); lbg.setAttribute('stroke',col); lbg.setAttribute('stroke-width','1'); g.appendChild(lbg);
+    const t = document.createElementNS(NS,'text');
+    t.setAttribute('x', x+7); t.setAttribute('y', Math.max(15, y-10)); t.setAttribute('fill', col);
+    t.setAttribute('font-family','Geist Mono, monospace'); t.setAttribute('font-size','15'); t.setAttribute('font-weight','600');
+    t.textContent = label; g.appendChild(t);
+    tracksEl.appendChild(g);
+  });
+  if (ttl) { clearTimeout(window._trkT); window._trkT = setTimeout(clearTracks, ttl); }
+}
+async function scanScene() {
+  toast('Scanning the field…', 'ok');
+  try {
+    const r = await fetch('/tool/detect_objects', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ args: { query: 'person, chair, table, laptop, monitor, keyboard, cup, bottle, phone, book, plant, bag, box, door, window', threshold: 0.08 } }) });
+    const j = await r.json();
+    if (!j.ok) { toast('Open-vocab detector offline — enable it on the Jetson (systemctl start jarvis-owl)', 'warn'); return; }
+    const dets = (j.result && j.result.detections) || [];
+    if (!dets.length) { toast('No entities detected in view', 'ok'); return; }
+    drawTracks(dets, 12000);
+    sayShow('scan field', dets.length + ' entities tracked: ' + dets.slice(0,6).map(d=>d.label).join(', '));
+  } catch (e) { toast('Scan failed: ' + e.message, 'error'); }
+}
+
 function hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; } }
 
 function makeInvCard(subject) {
@@ -2027,6 +2094,7 @@ const COMMANDS = [
   { cmd: 'identify', desc: 'Identify the main subject',    run: () => doTurn({kind: 'text', text: 'What is the main subject of the image? Give a brief, confident identification only if you can clearly see one. If the image is too dark or empty, say so.'}) },
   { cmd: 'investigate', desc: 'Zoom in, identify & look up', run: (a) => { const s = (a || text.value.trim()); if (s && !s.startsWith('/')) { text.value=''; text.style.height='auto'; } doInvestigate(s ? {subject: s} : {region: [0.25, 0.2, 0.5, 0.6]}); } },
   { cmd: 'zoom',     desc: 'Zoom into the center & identify', run: (a) => doInvestigate(a ? {subject: a} : {region: [0.28, 0.22, 0.44, 0.56]}) },
+  { cmd: 'scan',     desc: 'Scan the field — track all entities', run: () => scanScene() },
   { cmd: 'find',     desc: 'Locate a specific object',     run: (a) => doTurn({kind: 'text', text: a ? 'Can you see ' + a + ' in the image? If yes, describe where in the frame it is. If no, say it is not visible. Do not guess.' : 'Find and locate the most prominent object you can see, if any.'}) },
   { cmd: 'voice',    desc: 'Voice mode',                   run: () => doTurn({kind: 'talk'}) },
   { cmd: 'live',     desc: 'Toggle Live Mode',             run: () => toggleLive() },
