@@ -27,7 +27,69 @@
   --bad: #ef4444;
   --user-bubble: #181a1f;
   --r-sm: 8px; --r-md: 12px; --r-lg: 16px; --r-xl: 20px; --r-pill: 999px;
+  /* 2026 motion tokens — physics-based easing (not linear/robotic) */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in: cubic-bezier(0.64, 0, 0.78, 0);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  /* responsible glass (dark-mode Liquid-Glass-lite) */
+  --glass-fill: rgba(22, 24, 29, 0.55);
+  --glass-blur: blur(14px) saturate(150%);
+  --glass-edge: rgba(255, 255, 255, 0.14);
+  --cyan: #38bdf8;
 }
+/* tabular numerals everywhere telemetry/numbers stream, so layout never jitters
+   (font-feature-settings tnum is more reliable than font-variant-numeric here) */
+.hud-pill, .hud-pill span, .lat-bar, .seen-when, .ri-when, .inv-conf .cval,
+.zbadge, .hhost, #teleHint, .timings, .msg-meta, .seen-src, .wfired,
+.tab-badge { font-feature-settings: "tnum" 1; font-variant-numeric: tabular-nums; }
+
+/* ===== edge-glow voice presence (Siri-2026 pattern: the most "Jarvis" move) ==
+   A full-viewport inset border that breathes when idle and reacts to state.
+   pointer-events:none so it never blocks interaction. */
+.ambient {
+  position: fixed; inset: 0; z-index: 80; pointer-events: none;
+  border-radius: 2px;
+  box-shadow: inset 0 0 0 1.5px rgba(193,95,60,0.08),
+              inset 0 0 60px -12px rgba(193,95,60,0.12);
+  opacity: 0; transition: opacity .6s var(--ease-out), box-shadow .6s var(--ease-out);
+}
+.ambient.on { opacity: 1; animation: ambientBreathe 5.5s ease-in-out infinite; }
+@keyframes ambientBreathe {
+  0%,100% { box-shadow: inset 0 0 0 1.5px rgba(193,95,60,0.06), inset 0 0 55px -14px rgba(193,95,60,0.10); }
+  50%     { box-shadow: inset 0 0 0 1.5px rgba(193,95,60,0.12), inset 0 0 80px -10px rgba(193,95,60,0.20); }
+}
+.ambient.listening { animation: ambientListen 1.6s ease-in-out infinite; }
+@keyframes ambientListen {
+  0%,100% { box-shadow: inset 0 0 0 2px rgba(56,189,248,0.30), inset 0 0 90px -10px rgba(56,189,248,0.30); }
+  50%     { box-shadow: inset 0 0 0 2px rgba(56,189,248,0.55), inset 0 0 130px -6px rgba(56,189,248,0.5); }
+}
+.ambient.thinking { animation: ambientThink 2.4s linear infinite; }
+@keyframes ambientThink {
+  0%   { box-shadow: inset 0 0 0 2px rgba(193,95,60,0.22), inset 0 0 90px -10px rgba(193,95,60,0.30); }
+  50%  { box-shadow: inset 0 0 0 2px rgba(245,158,11,0.40), inset 0 0 120px -8px rgba(245,158,11,0.34); }
+  100% { box-shadow: inset 0 0 0 2px rgba(193,95,60,0.22), inset 0 0 90px -10px rgba(193,95,60,0.30); }
+}
+.ambient.speaking { animation: ambientSpeak 0.9s ease-in-out infinite; }
+@keyframes ambientSpeak {
+  0%,100% { box-shadow: inset 0 0 0 2px rgba(193,95,60,0.30), inset 0 0 90px -10px rgba(193,95,60,0.34); }
+  50%     { box-shadow: inset 0 0 0 2.5px rgba(193,95,60,0.55), inset 0 0 140px -6px rgba(193,95,60,0.55); }
+}
+.ambient.alert { animation: ambientAlert 0.7s ease-in-out 4; }
+@keyframes ambientAlert {
+  0%,100% { box-shadow: inset 0 0 0 2px rgba(239,68,68,0.30), inset 0 0 90px -10px rgba(239,68,68,0.30); }
+  50%     { box-shadow: inset 0 0 0 3px rgba(239,68,68,0.65), inset 0 0 150px -6px rgba(239,68,68,0.6); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ambient, .ambient.on, .ambient.listening, .ambient.thinking,
+  .ambient.speaking, .ambient.alert { animation: none; }
+}
+/* three.js holographic voice-presence orb (top-center of the feed) */
+.presence {
+  position: absolute; top: 6px; left: 50%; transform: translateX(-50%);
+  width: 96px; height: 96px; z-index: 6; pointer-events: none;
+  opacity: 0.9; transition: opacity .5s var(--ease-out), filter .5s var(--ease-out);
+}
+.feedwrap.live-on .presence { opacity: 0.6; }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
 body {
@@ -116,10 +178,14 @@ body {
 /* HUD pills */
 .hud-pill {
   position: absolute; padding: 6px 10px;
-  background: rgba(10,10,11,0.65);
-  backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
-  border: 1px solid var(--border-strong); border-radius: var(--r-pill);
+  background: rgba(10,10,11,0.62);
+  backdrop-filter: blur(16px) saturate(150%); -webkit-backdrop-filter: blur(16px) saturate(150%);
+  border: 1px solid var(--border-strong); border-top-color: var(--glass-edge);
+  border-radius: var(--r-pill);
   font: 500 11px/1 'Geist Mono', monospace; color: var(--text);
+  font-feature-settings: "tnum" 1, "ss01" 1;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+  box-shadow: 0 4px 16px -6px rgba(0,0,0,0.5);
   display: flex; align-items: center; gap: 8px;
 }
 .hud-tl { top: 12px; left: 12px; }
@@ -794,6 +860,7 @@ textarea#text::placeholder { color: var(--dim); }
 </style>
 
 <body>
+<div class=ambient id=ambient></div>
 <div class=shell>
 
   <div class=topbar>
@@ -826,6 +893,7 @@ textarea#text::placeholder { color: var(--dim); }
         <span class='corner bl'></span><span class='corner br'></span>
         <span class=scan></span><span class=rlabel id=rlabel>scanning</span>
       </div>
+      <canvas class=presence id=presence title='Jarvis presence'></canvas>
       <div class='hud-pill hud-tl livepill idle' id=livepill><span class=dot></span> idle</div>
       <div class='hud-pill hud-tr' id=hudtr><span>0.0 fps</span><span class=hud-sep>·</span><span class='hud-val'>—</span></div>
       <div class='hud-pill hud-bl' id=hudbl>qwen2.5-vl-3b · 640&times;480</div>
@@ -1015,6 +1083,8 @@ textarea#text::placeholder { color: var(--dim); }
 
 <script>
 'use strict';
+// bridge to the three.js voice orb (read by the WebGL module below)
+window.jarvisVoice = { level: 0, state: 'idle' };
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
 marked.setOptions({ breaks: true, gfm: true });
@@ -1135,10 +1205,37 @@ async function tickMetrics() {
 }
 setInterval(tickMetrics, 2000); tickMetrics();
 
+/* edge-glow voice presence — maps high-level state to the ambient border.
+   states: idle | listening | thinking | speaking | alert */
+const ambientEl = $('#ambient');
+let _alertTimer = null;
+function setAmbient(state) {
+  if (!ambientEl) return;
+  if (state === 'alert') {
+    ambientEl.className = 'ambient on alert';
+    clearTimeout(_alertTimer);
+    _alertTimer = setTimeout(() => setAmbient(_lastAmbient || 'idle'), 3200);
+    return;
+  }
+  _lastAmbient = state || 'idle';
+  ambientEl.className = 'ambient on ' + (state || 'idle');
+  window.jarvisVoice.state = state || 'idle';
+}
+let _lastAmbient = 'idle';
+const _LABEL_AMBIENT = {
+  'listening': 'listening', 'looking': 'thinking', 'reasoning': 'thinking',
+  'transcribing': 'thinking', 'investigating': 'thinking', 'speaking': 'speaking',
+  'idle': 'idle',
+};
 function setLive(state, label) {
   livepill.className = 'hud-pill hud-tl livepill ' + (state || 'idle');
   livepill.innerHTML = '<span class=dot></span> ' + (label || 'idle');
+  // derive ambient voice-presence state from the label/state
+  let amb = _LABEL_AMBIENT[label];
+  if (!amb) amb = (state === 'recording' ? 'thinking' : 'idle');
+  if (_lastAmbient !== 'alert') setAmbient(amb);
 }
+setAmbient('idle');  // edge-glow voice presence on from boot
 function showCaption(t) {
   if (!livecap) return;
   livecap.innerHTML = '<span class=cap-tag>Live</span>' + escapeHtml(t);
@@ -1824,6 +1921,7 @@ function attachAudioMeter() {
   audioES = new EventSource('/audio_meter');
   audioES.onmessage = (e) => {
     const lv = parseFloat(e.data); if (isNaN(lv)) return;
+    window.jarvisVoice.level = lv;
     levels.copyWithin(0, 1);
     levels[levels.length - 1] = lv;
     drawWave();
@@ -1977,6 +2075,7 @@ function attachNotifications() {
 function showNotification(n) {
   const kindLabel = n.kind === 'reminder' ? 'Reminder' : (n.kind === 'alert' ? '⚠ Alert' : (n.kind || 'Notice'));
   toast(`${kindLabel}: ${n.text || ''}`, n.kind === 'alert' ? 'warn' : 'ok');
+  if (n.kind === 'alert') setAmbient('alert');
   if (n.audio_url) {
     // play through the same audio context as TTS replies
     (async () => {
@@ -2394,6 +2493,137 @@ $('#stopbtn').onclick = stopCurrent;
 /* warmup */
 loadPins();
 attachLiveStream();
+</script>
+
+<!-- ===== three.js holographic voice-presence orb (WebGL FX layer) =====
+     CDN importmap (viewer has internet over USB-C/Wi-Fi). For offline/AP use,
+     vendor three.module.js locally and point this at a served path. -->
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js" } }
+</script>
+<script type="module">
+try {
+  const canvas = document.getElementById('presence');
+  // WebGL feature check — degrade silently to the CSS HUD if unavailable.
+  const testGL = canvas.getContext('webgl2') || canvas.getContext('webgl');
+  if (!testGL) throw new Error('no webgl');
+  const THREE = await import('three');
+
+  const isMobile = matchMedia('(max-width: 640px)').matches;
+  const DPR = Math.min(window.devicePixelRatio || 1, isMobile ? 1.5 : 2);
+  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, powerPreference: 'high-performance' });
+  renderer.setClearColor(0x000000, 0);
+  function size() {
+    const w = canvas.clientWidth || 96, h = canvas.clientHeight || 96;
+    renderer.setPixelRatio(DPR); renderer.setSize(w, h, false);
+  }
+  const scene = new THREE.Scene();
+  const cam = new THREE.PerspectiveCamera(45, 1, 0.1, 20);
+  cam.position.z = 3.5;
+
+  // palette per voice state
+  const COLORS = {
+    idle:      new THREE.Color(0xc15f3c),
+    listening: new THREE.Color(0x38bdf8),
+    thinking:  new THREE.Color(0xf5a30b),
+    speaking:  new THREE.Color(0xe06a3a),
+    alert:     new THREE.Color(0xef4444),
+  };
+  const curColor = COLORS.idle.clone();
+
+  // --- fresnel core sphere (additive, deforms with voice level) ---
+  const coreMat = new THREE.ShaderMaterial({
+    transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+    uniforms: { uTime: { value: 0 }, uLevel: { value: 0 }, uColor: { value: curColor } },
+    vertexShader: `
+      uniform float uTime, uLevel; varying float vF;
+      float nz(vec3 p){ return sin(p.x*3.0+uTime)*sin(p.y*2.7+uTime*1.3)*sin(p.z*3.3+uTime*0.7); }
+      void main(){
+        vec3 p = position;
+        float disp = (0.05 + uLevel*0.55) * nz(normalize(position)*1.8 + uTime*0.15);
+        p += normal * disp;
+        vec4 mv = modelViewMatrix * vec4(p,1.0);
+        vec3 vd = normalize(-mv.xyz);
+        vec3 wn = normalize(normalMatrix * normal);
+        vF = pow(1.0 - max(dot(wn, vd), 0.0), 2.2);
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      uniform vec3 uColor; uniform float uLevel; varying float vF;
+      void main(){
+        float core = 0.22 + uLevel*0.55;
+        vec3 col = uColor * (core + vF*1.6);
+        float a = clamp(core*0.45 + vF*1.1, 0.0, 1.0);
+        gl_FragColor = vec4(col, a);
+      }`,
+  });
+  const core = new THREE.Mesh(new THREE.IcosahedronGeometry(1, 20), coreMat);
+  scene.add(core);
+
+  // --- particle halo (additive points on a shell) ---
+  const N = isMobile ? 700 : 1400;
+  const pos = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    const u = Math.random(), v = Math.random();
+    const th = 2 * Math.PI * u, ph = Math.acos(2 * v - 1);
+    const r = 1.45 + Math.random() * 0.25;
+    pos[i*3] = r*Math.sin(ph)*Math.cos(th); pos[i*3+1] = r*Math.sin(ph)*Math.sin(th); pos[i*3+2] = r*Math.cos(ph);
+  }
+  const pg = new THREE.BufferGeometry();
+  pg.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const pMat = new THREE.PointsMaterial({ size: 0.035, color: curColor, transparent: true,
+    blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.7 });
+  const halo = new THREE.Points(pg, pMat);
+  scene.add(halo);
+
+  // --- soft glow sprite behind (fakes bloom, cheap) ---
+  const gc = document.createElement('canvas'); gc.width = gc.height = 128;
+  const gx = gc.getContext('2d');
+  const grad = gx.createRadialGradient(64,64,0,64,64,64);
+  grad.addColorStop(0,'rgba(255,255,255,0.9)'); grad.addColorStop(0.4,'rgba(255,255,255,0.25)'); grad.addColorStop(1,'rgba(255,255,255,0)');
+  gx.fillStyle = grad; gx.fillRect(0,0,128,128);
+  const glowTex = new THREE.CanvasTexture(gc);
+  const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: curColor,
+    transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.5 }));
+  glow.scale.set(4.5, 4.5, 1); scene.add(glow);
+
+  size();
+  new ResizeObserver(size).observe(canvas);
+
+  let smoothLevel = 0, running = true, t0 = performance.now();
+  document.addEventListener('visibilitychange', () => {
+    running = !document.hidden; if (running) { t0 = performance.now(); loop(); }
+  });
+  function loop() {
+    if (!running) return;
+    requestAnimationFrame(loop);
+    const now = performance.now(); const t = (now - t0) / 1000;
+    const vs = window.jarvisVoice || { level: 0, state: 'idle' };
+    // smooth level; idle gets a gentle breathing baseline
+    const target = vs.level || 0;
+    smoothLevel += (target - smoothLevel) * 0.18;
+    const idleBreath = 0.06 * (0.5 + 0.5 * Math.sin(t * 1.2));
+    const lvl = Math.min(1, smoothLevel * 1.6 + (vs.state === 'idle' ? idleBreath : 0.04));
+    // ease color toward state
+    const tc = COLORS[vs.state] || COLORS.idle;
+    curColor.lerp(tc, 0.06);
+    coreMat.uniforms.uTime.value = t;
+    coreMat.uniforms.uLevel.value = lvl;
+    pMat.color.copy(curColor); glow.material.color.copy(curColor);
+    glow.material.opacity = 0.35 + lvl * 0.5;
+    pMat.opacity = 0.5 + lvl * 0.4;
+    core.rotation.y = t * 0.25; core.rotation.x = t * 0.12;
+    halo.rotation.y = -t * 0.18; halo.rotation.z = t * 0.05;
+    const s = 1 + lvl * 0.18; core.scale.setScalar(s);
+    renderer.render(scene, cam);
+  }
+  loop();
+  window.__orbReady = true;
+} catch (e) {
+  console.warn('[orb] WebGL presence orb disabled:', e.message);
+  const c = document.getElementById('presence'); if (c) c.style.display = 'none';
+  window.__orbReady = false;
+}
 </script>
 </body>
 </html>
