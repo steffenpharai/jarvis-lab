@@ -437,6 +437,47 @@ class Memory:
                         e["frame_url"] = furl
         return sorted(agg.values(), key=lambda e: e["last_ts"], reverse=True)
 
+    def entity_detail(self, label: str, scan_rows: int = 400) -> dict:
+        """Object-centric dossier for one entity: sightings over time + the
+        entities it co-occurs with (the Palantir 'links' between objects)."""
+        label = re.sub(r"[^a-z0-9 ]", "", (label or "").lower()).strip()
+        with self.lock:
+            rows = self._con.execute(
+                "SELECT ts, objects, frame_file, caption FROM visual_memory "
+                "WHERE objects != '' ORDER BY ts DESC LIMIT ?", (scan_rows,),
+            ).fetchall()
+        sightings: list[dict] = []
+        related: dict[str, int] = {}
+        first_ts = last_ts = None
+        count = 0
+        last_caption = ""
+        for ts, objs, frame, caption in rows:
+            labs = set()
+            for o in (objs or "").split(","):
+                lab = re.sub(r"[^a-z0-9 ]", "", o.strip().lower()).strip()
+                if len(lab) >= 2:
+                    labs.add(lab)
+            if label not in labs:
+                continue
+            count += 1
+            if last_ts is None:
+                last_ts = ts
+                last_caption = caption or ""
+            first_ts = ts
+            if len(sightings) < 16 and frame:
+                sightings.append({"ts": ts, "frame_url": f"/vmem/{frame}"})
+            for lab in labs:
+                if lab != label:
+                    related[lab] = related.get(lab, 0) + 1
+        rel = sorted(related.items(), key=lambda x: -x[1])[:10]
+        return {
+            "label": label, "count": count,
+            "first_ts": first_ts, "last_ts": last_ts,
+            "last_caption": last_caption,
+            "sightings": sightings,
+            "related": [{"label": k, "count": v} for k, v in rel],
+        }
+
     @staticmethod
     def _vrow(r) -> dict:
         return {"id": r[0], "ts": r[1], "caption": r[2] or "",
@@ -1949,6 +1990,13 @@ class H(BaseHTTPRequestHandler):
             self._send_json(200, {"items": MEMORY.search(q, 50), "q": q})
         elif p == "/memory/pinned":
             self._send_json(200, {"items": MEMORY.pinned()})
+        elif p.startswith("/memory/entity?"):
+            from urllib.parse import unquote
+            label = ""
+            for kv in p.split("?", 1)[1].split("&"):
+                if kv.startswith("label="):
+                    label = unquote(kv[6:])
+            self._send_json(200, MEMORY.entity_detail(label))
         elif p == "/memory/entities":
             ents = MEMORY.vmem_entities()
             # surface the most-sighted entities first, then most-recent — keeps

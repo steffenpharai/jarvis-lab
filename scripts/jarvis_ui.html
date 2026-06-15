@@ -1059,6 +1059,31 @@ textarea#text::placeholder { color: var(--dim); }
 .ent-meta { font: 500 10.5px/1.4 'Geist Mono', monospace; color: var(--muted); margin-top: 1px; }
 .ent-go { background: transparent; border: 1px solid var(--border); color: var(--accent); width: 26px; height: 26px; border-radius: var(--r-sm); cursor: pointer; flex-shrink: 0; font-size: 14px; }
 .ent-row:hover .ent-go { border-color: var(--accent-soft); background: var(--accent-soft); }
+/* entity inspector (object dossier + linked-entity pivot) */
+.ent-det-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.ent-back { background: transparent; border: 1px solid var(--border); color: var(--muted); font: 600 11px/1 'Geist', sans-serif; padding: 6px 10px; border-radius: var(--r-pill); cursor: pointer; }
+.ent-back:hover { color: var(--text); border-color: var(--accent-soft); }
+.ent-det-name { font: 600 16px/1.2 'Geist', sans-serif; text-transform: capitalize; }
+.ent-det-hero { border-radius: var(--r-md); overflow: hidden; border: 1px solid var(--border); background: #000; }
+.ent-det-hero img { width: 100%; max-height: 200px; object-fit: cover; display: block; cursor: zoom-in; }
+.ent-det-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 10px 0; }
+.ent-det-stats > div { border: 1px solid var(--border); border-radius: var(--r-md); padding: 8px; text-align: center; }
+.ent-det-stats .k { display: block; font: 600 8px/1 'Geist Mono', monospace; letter-spacing: .14em; color: var(--dim); }
+.ent-det-stats .v { display: block; font: 600 15px/1.2 'Geist Mono', monospace; color: var(--text); margin-top: 4px; }
+.ent-det-cap { font-size: 12.5px; color: var(--muted); line-height: 1.45; margin-bottom: 10px; }
+.ent-det-actions { display: flex; gap: 8px; margin-bottom: 12px; }
+.ent-act, .ent-act2 { flex: 1; font: 600 12px/1 'Geist', sans-serif; padding: 9px; border-radius: var(--r-sm); cursor: pointer; }
+.ent-act { background: var(--accent); border: none; color: #fff; }
+.ent-act:hover { box-shadow: 0 0 12px var(--accent-glow); }
+.ent-act2 { background: transparent; border: 1px solid var(--accent-soft); color: var(--accent); }
+.ent-act2:hover { background: var(--accent-soft); }
+.ent-sec { font: 600 9px/1 'Geist Mono', monospace; letter-spacing: .16em; color: var(--dim); margin: 12px 0 7px; }
+.ent-links { display: flex; flex-wrap: wrap; gap: 6px; }
+.ent-link { display: inline-flex; align-items: center; gap: 6px; font: 500 12px/1 'Geist', sans-serif; text-transform: capitalize; color: var(--muted); background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-pill); padding: 6px 10px; cursor: pointer; transition: 120ms; }
+.ent-link:hover { color: var(--text); border-color: var(--accent-soft); background: var(--accent-soft); }
+.ent-link span { font: 600 10px/1 'Geist Mono', monospace; color: var(--accent); }
+.ent-shots { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; }
+.ent-shots img { width: 100%; height: 50px; object-fit: cover; border-radius: var(--r-sm); cursor: zoom-in; border: 1px solid var(--border); }
 </style>
 
 <body>
@@ -1188,6 +1213,7 @@ textarea#text::placeholder { color: var(--dim); }
     <div class='pane hidden' id=pane-entities>
       <div class=empty id=entities-empty>No entities yet — Jarvis registers what it sees as the scene changes.</div>
       <div id=entities-list></div>
+      <div id=entity-detail class=hidden></div>
     </div>
     <div class='pane hidden' id=pane-activity>
       <div class=empty id=activity-empty>No tool activity yet. Jarvis logs every tool call here.</div>
@@ -1428,7 +1454,7 @@ function switchPane(name) {
   if (name === 'seen') loadSeen();
   if (name === 'tools') loadTools();
   if (name === 'activity') loadActivity();
-  if (name === 'entities') loadEntities();
+  if (name === 'entities') { entityListView(); loadEntities(); }
 }
 
 /* ===== entity registry (Palantir object-centric core) ===== */
@@ -1450,9 +1476,50 @@ async function loadEntities() {
 }
 $('#entities-list') && $('#entities-list').addEventListener('click', (ev) => {
   const row = ev.target.closest('.ent-row'); if (!row) return;
-  const label = row.dataset.label; if (!label || isStreaming) return;
-  doInvestigate({ subject: label });   // object-centric pivot: inspect the entity
+  if (row.dataset.label) showEntityDetail(row.dataset.label);
 });
+function entityListView() {
+  $('#entity-detail').classList.add('hidden');
+  $('#entities-list').classList.remove('hidden');
+}
+async function showEntityDetail(label) {
+  const det = $('#entity-detail');
+  $('#entities-list').classList.add('hidden');
+  const emp = $('#entities-empty'); if (emp) emp.style.display = 'none';
+  det.classList.remove('hidden');
+  det.innerHTML = '<div class=empty>Loading dossier…</div>';
+  let d; try { d = await (await fetch('/memory/entity?label=' + encodeURIComponent(label))).json(); }
+  catch (e) { det.innerHTML = '<div class=empty>Could not load entity.</div>'; return; }
+  const hero = (d.sightings && d.sightings[0] && d.sightings[0].frame_url) || '/snapshot.jpg';
+  det.innerHTML =
+    '<div class=ent-det-head>' +
+      '<button class=ent-back id=ent-back>‹ Entities</button>' +
+      '<span class=ent-det-name>' + escapeHtml(d.label) + '</span>' +
+    '</div>' +
+    '<div class=ent-det-hero><img src="' + escapeHtml(hero) + '" alt=""></div>' +
+    '<div class=ent-det-stats>' +
+      '<div><span class=k>SIGHTINGS</span><span class=v>' + (d.count || 0) + '</span></div>' +
+      '<div><span class=k>LAST</span><span class=v>' + (d.last_ts ? _ago(d.last_ts) : '—') + '</span></div>' +
+      '<div><span class=k>FIRST</span><span class=v>' + (d.first_ts ? _ago(d.first_ts) : '—') + '</span></div>' +
+    '</div>' +
+    (d.last_caption ? '<div class=ent-det-cap>' + escapeHtml(d.last_caption) + '</div>' : '') +
+    '<div class=ent-det-actions>' +
+      '<button class=ent-act id=ent-investigate>⌕ Investigate now</button>' +
+      '<button class=ent-act2 id=ent-watch>+ Watch for it</button>' +
+    '</div>' +
+    (d.related && d.related.length ?
+      '<div class=ent-sec>LINKED ENTITIES</div><div class=ent-links id=ent-links>' +
+      d.related.map(r => '<button class=ent-link data-label="' + escapeHtml(r.label) + '">' +
+        escapeHtml(r.label) + '<span>' + r.count + '</span></button>').join('') + '</div>' : '') +
+    (d.sightings && d.sightings.length ?
+      '<div class=ent-sec>SIGHTINGS TIMELINE</div><div class=ent-shots id=ent-shots>' +
+      d.sightings.map(s => '<img src="' + escapeHtml(s.frame_url) + '" loading=lazy title="' + _ago(s.ts) + '">').join('') + '</div>' : '');
+  det.querySelector('#ent-back').onclick = entityListView;
+  det.querySelector('#ent-investigate').onclick = () => { if (!isStreaming) doInvestigate({ subject: d.label }); };
+  det.querySelector('#ent-watch').onclick = () => { addWatch('a ' + d.label + ' is visible'); toast('Watching for ' + d.label, 'ok'); };
+  det.querySelectorAll('.ent-link').forEach(b => b.onclick = () => showEntityDetail(b.dataset.label)); // pivot
+  det.querySelectorAll('#ent-shots img, .ent-det-hero img').forEach(im => im.onclick = () => { $('#lightboximg').src = im.src; $('#lightbox').classList.add('open'); });
+}
 
 /* ===== capability catalog + activity ledger (transparency) ===== */
 async function loadTools(q = '') {
