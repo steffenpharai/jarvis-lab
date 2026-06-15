@@ -43,6 +43,31 @@
 .zbadge, .hhost, #teleHint, .timings, .msg-meta, .seen-src, .wfired,
 .tab-badge { font-feature-settings: "tnum" 1; font-variant-numeric: tabular-nums; }
 
+/* ===== JARVIS boot / power-on sequence ===== */
+.boot { position: fixed; inset: 0; z-index: 500; background: #060607;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px;
+  transition: opacity .7s ease; cursor: pointer; }
+.boot.done { opacity: 0; pointer-events: none; }
+.boot-core { position: relative; width: 150px; height: 150px; }
+.boot-core .boot-ring { position: absolute; inset: 0; border-radius: 50%; border: 1.5px solid var(--accent);
+  border-top-color: transparent; border-left-color: transparent; opacity: .85; animation: bootSpin 1.1s linear infinite; }
+.boot-core .boot-ring.r2 { inset: 18px; border-color: var(--cyan); border-bottom-color: transparent; border-right-color: transparent; animation: bootSpin 1.6s linear infinite reverse; }
+.boot-core .boot-ring.r3 { inset: 38px; border-color: rgba(193,95,60,0.5); border-top-color: transparent; animation: bootSpin 0.8s linear infinite; }
+.boot-core .boot-dot { position: absolute; inset: 60px; border-radius: 50%;
+  background: radial-gradient(circle, #fff, var(--accent) 60%, transparent 75%);
+  box-shadow: 0 0 30px var(--accent-glow), 0 0 60px var(--accent-glow); animation: bootPulse 1.4s ease-in-out infinite; }
+@keyframes bootSpin { to { transform: rotate(360deg); } }
+@keyframes bootPulse { 0%,100% { transform: scale(0.85); opacity: .8; } 50% { transform: scale(1.1); opacity: 1; } }
+.boot-word { font: 600 26px/1 'Geist', sans-serif; letter-spacing: 0.4em; color: var(--text);
+  text-shadow: 0 0 24px var(--accent-glow); opacity: 0; animation: bootIn .8s ease-out .3s forwards; padding-left: .4em; }
+.boot-status { font: 600 11px/1 'Geist Mono', monospace; letter-spacing: .24em; text-transform: uppercase; color: var(--cyan); min-height: 12px; opacity: 0; animation: bootIn .6s ease-out .6s forwards; }
+.boot-bar { width: 220px; height: 2px; background: var(--border-strong); border-radius: 2px; overflow: hidden; opacity: 0; animation: bootIn .5s ease-out .5s forwards; }
+.boot-bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), var(--cyan)); box-shadow: 0 0 10px var(--accent-glow); animation: bootFill 2.2s cubic-bezier(.6,0,.2,1) .4s forwards; }
+.boot-skip { position: absolute; bottom: 26px; font: 500 9px/1 'Geist Mono', monospace; letter-spacing: .2em; text-transform: uppercase; color: var(--dim); opacity: 0; animation: bootIn .5s ease 1.4s forwards; }
+@keyframes bootIn { to { opacity: 1; } }
+@keyframes bootFill { to { width: 100%; } }
+@media (prefers-reduced-motion: reduce) { .boot-core .boot-ring, .boot-core .boot-dot { animation: none; } }
+
 /* ===== edge-glow voice presence (Siri-2026 pattern: the most "Jarvis" move) ==
    A full-viewport inset border that breathes when idle and reacts to state.
    pointer-events:none so it never blocks interaction. */
@@ -1110,6 +1135,13 @@ textarea#text::placeholder { color: var(--dim); }
 </style>
 
 <body>
+<div class=boot id=boot>
+  <div class=boot-core><span class=boot-ring></span><span class=boot-ring r2></span><span class=boot-ring r3></span><span class=boot-dot></span></div>
+  <div class=boot-word>J·A·R·V·I·S</div>
+  <div class=boot-status id=boot-status>initializing</div>
+  <div class=boot-bar><i></i></div>
+  <div class=boot-skip>click to skip</div>
+</div>
 <div class=ambient id=ambient></div>
 <div class=shell>
 
@@ -1430,6 +1462,20 @@ textarea#text::placeholder { color: var(--dim); }
 'use strict';
 // bridge to the three.js voice orb (read by the WebGL module below)
 window.jarvisVoice = { level: 0, state: 'idle' };
+
+/* ===== JARVIS boot / power-on sequence (once per session, skippable) ===== */
+(function boot() {
+  const b = document.getElementById('boot'); if (!b) return;
+  if (sessionStorage.getItem('jarvis_booted')) { b.remove(); return; }
+  const st = document.getElementById('boot-status');
+  const lines = ['initializing', 'vision online', 'voice online', 'memory online', 'systems online'];
+  let i = 0; const iv = setInterval(() => { if (st && i < lines.length) st.textContent = lines[i++]; }, 480);
+  let done = false;
+  function finish() { if (done) return; done = true; clearInterval(iv); b.classList.add('done'); sessionStorage.setItem('jarvis_booted', '1'); setTimeout(() => b.remove(), 800); }
+  const to = setTimeout(finish, 2800);
+  b.addEventListener('click', () => { clearTimeout(to); finish(); });
+  window.addEventListener('keydown', function sk() { window.removeEventListener('keydown', sk); clearTimeout(to); finish(); });
+})();
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
 marked.setOptions({ breaks: true, gfm: true });
