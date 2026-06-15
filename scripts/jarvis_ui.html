@@ -83,6 +83,18 @@
   .ambient, .ambient.on, .ambient.listening, .ambient.thinking,
   .ambient.speaking, .ambient.alert { animation: none; }
 }
+/* diegetic feed HUD texture — faint scanlines + vignette + edge legibility
+   gradients so corner pills/captions always read over live video. Restrained. */
+.feed-fx {
+  position: absolute; inset: 0; z-index: 1; pointer-events: none; border-radius: inherit;
+  background:
+    linear-gradient(180deg, rgba(0,0,0,0.38) 0%, transparent 16%, transparent 84%, rgba(0,0,0,0.42) 100%),
+    radial-gradient(120% 120% at 50% 50%, transparent 62%, rgba(0,0,0,0.28) 100%),
+    repeating-linear-gradient(0deg, rgba(255,255,255,0.018) 0px, rgba(255,255,255,0.018) 1px, transparent 1px, transparent 3px);
+  mix-blend-mode: normal;
+}
+/* keep feed chrome above the FX texture overlay */
+.hud-pill, .live-toggle, .wake-pill { z-index: 5; }
 /* three.js holographic voice-presence orb (top-center of the feed) */
 .presence {
   position: absolute; top: 6px; left: 50%; transform: translateX(-50%);
@@ -894,6 +906,7 @@ textarea#text::placeholder { color: var(--dim); }
         <span class=scan></span><span class=rlabel id=rlabel>scanning</span>
       </div>
       <canvas class=presence id=presence title='Jarvis presence'></canvas>
+      <div class=feed-fx aria-hidden=true></div>
       <div class='hud-pill hud-tl livepill idle' id=livepill><span class=dot></span> idle</div>
       <div class='hud-pill hud-tr' id=hudtr><span>0.0 fps</span><span class=hud-sep>·</span><span class='hud-val'>—</span></div>
       <div class='hud-pill hud-bl' id=hudbl>qwen2.5-vl-3b · 640&times;480</div>
