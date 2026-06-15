@@ -105,6 +105,12 @@
   box-shadow: 0 24px 70px -24px rgba(0,0,0,0.7);
 }
 .sysrail::-webkit-scrollbar { width: 0; }
+.sys-ops { display: flex; align-items: center; gap: 7px; font: 600 11px/1.4 'Geist Mono', monospace;
+  letter-spacing: .08em; padding-bottom: 9px; border-bottom: 1px solid var(--border); }
+.sys-ops .opd { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); flex-shrink: 0; }
+.sys-ops.busy .opd { background: var(--cyan); box-shadow: 0 0 8px rgba(56,189,248,0.7); animation: pulse 1.2s ease-in-out infinite; }
+.sys-ops .opt { color: var(--muted); text-transform: uppercase; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sys-ops.busy .opt { color: var(--cyan); }
 .sys-grp { display: flex; flex-direction: column; gap: 3px; }
 .sys-h { font: 600 9px/1 'Geist Mono', monospace; letter-spacing: .2em; color: var(--dim); margin-bottom: 4px; }
 .sys-row { display: flex; align-items: center; gap: 7px; font: 500 11px/1.6 'Geist Mono', monospace; }
@@ -1095,6 +1101,7 @@ textarea#text::placeholder { color: var(--dim); }
 
     <!-- ===== SYSTEMS rail — always-on operational transparency ===== -->
     <aside class=sysrail id=sysrail>
+      <div class=sys-ops id=sys-ops><span class=opd></span><span class=opt id=sys-opt>standby</span></div>
       <div class=sys-grp>
         <div class=sys-h>SYSTEMS</div>
         <div class=sys-row id=sys-vlm><span class=sd></span><span class=sl>VLM</span><span class=sv>—</span></div>
@@ -1551,6 +1558,14 @@ function setLive(state, label) {
   let amb = _LABEL_AMBIENT[label];
   if (!amb) amb = (state === 'recording' ? 'thinking' : 'idle');
   if (_lastAmbient !== 'alert') setAmbient(amb);
+  const working = !!(label && label !== 'idle');
+  setOps(working ? label : 'standby', working);
+}
+// live OPERATION readout in the SYSTEMS rail (what Jarvis is doing right now)
+function setOps(text, busy) {
+  const r = document.getElementById('sys-ops'); if (!r) return;
+  r.classList.toggle('busy', !!busy);
+  const t = document.getElementById('sys-opt'); if (t) t.textContent = text || 'standby';
 }
 setAmbient('idle');  // edge-glow voice presence on from boot
 function showCaption(t) {
@@ -2076,6 +2091,7 @@ function doInvestigate(opts) {
 
   function cleanup() {
     isStreaming = false; setComposerBusy(false); setLive('idle', 'idle');
+    setOps('standby', false);
     setTimeout(hideReticle, 1400);
   }
 
@@ -2089,7 +2105,7 @@ function doInvestigate(opts) {
         if (!ev.data) return;
         let m; try { m = JSON.parse(ev.data); } catch { return; }
         const ph = m.phase;
-        if (STATUS[ph]) statusEl.textContent = STATUS[ph];
+        if (STATUS[ph]) { statusEl.textContent = STATUS[ph]; setOps(STATUS[ph], ph !== 'done'); }
         if (ph === 'located') {
           locBox = m.bbox;
           if (m.bbox) showReticle(m.bbox, true, (m.method === 'grid' ? 'located' : m.method === 'point' ? 'target' : 'subject'));
