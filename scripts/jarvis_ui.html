@@ -112,6 +112,9 @@
 .sys-ops .opt { color: var(--muted); text-transform: uppercase; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sys-ops.busy .opt { color: var(--cyan); }
 .sys-grp { display: flex; flex-direction: column; gap: 3px; }
+.spark-row { display: flex; align-items: center; gap: 8px; }
+.spark-lbl { font: 600 9px/1 'Geist Mono', monospace; color: var(--muted); width: 24px; }
+.spark { flex: 1; height: 20px; display: block; }
 .sys-h { font: 600 9px/1 'Geist Mono', monospace; letter-spacing: .2em; color: var(--dim); margin-bottom: 4px; }
 .sys-row { display: flex; align-items: center; gap: 7px; font: 500 11px/1.6 'Geist Mono', monospace; }
 .sys-row .sd { width: 6px; height: 6px; border-radius: 50%; background: var(--dim); flex-shrink: 0; box-shadow: none; }
@@ -149,6 +152,14 @@
 .hudframe .hc.tr { right: 0; top: 0; border-left: 0; border-bottom: 0; }
 .hudframe .hc.bl { left: 0; bottom: 0; border-right: 0; border-top: 0; }
 .hudframe .hc.br { right: 0; bottom: 0; border-left: 0; border-top: 0; }
+/* ambient radar scan sweep (Iron-Man targeting) */
+.scansweep { position: absolute; inset: 0; z-index: 2; pointer-events: none; overflow: hidden; opacity: 0.45; }
+.scansweep::before { content: ''; position: absolute; inset: -60%;
+  background: conic-gradient(from 0deg, transparent 0deg, transparent 320deg,
+    rgba(56,189,248,0.04) 340deg, rgba(56,189,248,0.16) 358deg, rgba(56,189,248,0.30) 360deg);
+  animation: radarSpin 7s linear infinite; transform-origin: 50% 50%; }
+@keyframes radarSpin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .scansweep { display: none; } }
 /* entity-track overlay (Lattice-style detection boxes drawn on the world view) */
 .tracks { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 3; pointer-events: none; }
 /* three.js holographic voice-presence orb (top-center of the feed) */
@@ -1143,6 +1154,7 @@ textarea#text::placeholder { color: var(--dim); }
       <div class=hudframe aria-hidden=true>
         <span class='hc tl'></span><span class='hc tr'></span><span class='hc bl'></span><span class='hc br'></span>
       </div>
+      <div class=scansweep aria-hidden=true></div>
       <svg class=tracks id=tracks viewBox='0 0 1000 1000' preserveAspectRatio=none></svg>
       <div class='hud-pill hud-tl livepill idle' id=livepill><span class=dot></span> idle</div>
       <div class='hud-pill hud-tr' id=hudtr><span>0.0 fps</span><span class=hud-sep>·</span><span class='hud-val'>—</span></div>
@@ -1183,6 +1195,12 @@ textarea#text::placeholder { color: var(--dim); }
         <div class=sys-row id=sys-soc><span class=sl>SoC</span><span class=sv>—</span></div>
         <div class=sys-row id=sys-fps><span class=sl>FPS</span><span class=sv>—</span></div>
         <div class=sys-row id=sys-up><span class=sl>UP</span><span class=sv>—</span></div>
+      </div>
+      <div class=sys-grp>
+        <div class=sys-h>TELEMETRY</div>
+        <div class=spark-row><span class=spark-lbl>RAM</span><canvas class=spark id=spark-ram width=120 height=20></canvas></div>
+        <div class=spark-row><span class=spark-lbl>SoC</span><canvas class=spark id=spark-soc width=120 height=20></canvas></div>
+        <div class=spark-row><span class=spark-lbl>FPS</span><canvas class=spark id=spark-fps width=120 height=20></canvas></div>
       </div>
       <div class=sys-grp>
         <div class=sys-h>KNOWLEDGE</div>
@@ -1650,7 +1668,31 @@ function fmtUp(s) {
   if (s < 86400) return Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm';
   return Math.floor(s / 86400) + 'd ' + Math.floor((s % 86400) / 3600) + 'h';
 }
+/* live telemetry sparklines */
+const _spark = { ram: [], soc: [], fps: [] };
+function drawSpark(id, arr, rgb) {
+  const cv = document.getElementById(id); if (!cv || arr.length < 2) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = cv.clientWidth || 120, h = cv.clientHeight || 20;
+  if (cv.width !== Math.round(w * dpr)) { cv.width = w * dpr; cv.height = h * dpr; }
+  const ctx = cv.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h);
+  const min = Math.min(...arr), max = Math.max(...arr), rng = (max - min) || 1;
+  const X = i => i / (arr.length - 1) * w, Y = v => h - 2 - ((v - min) / rng) * (h - 4);
+  ctx.beginPath(); arr.forEach((v, i) => i ? ctx.lineTo(X(i), Y(v)) : ctx.moveTo(X(i), Y(v)));
+  ctx.strokeStyle = 'rgb(' + rgb + ')'; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath(); ctx.fillStyle = 'rgba(' + rgb + ',0.12)'; ctx.fill();
+  const ly = Y(arr[arr.length - 1]); ctx.fillStyle = 'rgb(' + rgb + ')'; ctx.beginPath(); ctx.arc(w - 1.5, ly, 1.8, 0, 6.283); ctx.fill();
+}
+function pushSpark(m) {
+  const cap = 48;
+  _spark.ram.push(m.ram_avail_mb); _spark.soc.push(m.soc_temp_c); _spark.fps.push(m.cam_fps);
+  for (const k in _spark) if (_spark[k].length > cap) _spark[k].shift();
+  drawSpark('spark-ram', _spark.ram, '193,95,60');
+  drawSpark('spark-soc', _spark.soc, '245,163,11');
+  drawSpark('spark-fps', _spark.fps, '56,189,248');
+}
 function updateSysRail(m) {
+  pushSpark(m);
   setSys('sys-vlm', m.vlm_up ? 'ok' : 'bad', m.vlm_up ? 'online' : 'down');
   setSys('sys-cam', m.cam_fps > 1 ? 'ok' : 'warn', m.cam_fps ? Math.round(m.cam_fps) + 'fps' : '—');
   setSys('sys-mic', m.whisper_ok ? 'ok' : 'off', m.whisper_ok ? 'ready' : '—');
