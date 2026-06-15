@@ -2999,9 +2999,13 @@ def run_investigate(ctx: ToolContext, *, subject: str = "", point=None,
     id_prompt = (
         "You are a visual identification expert looking at an enhanced, "
         "zoomed-in crop. " + subj_clause +
-        "Identify it as SPECIFICALLY as the image allows — exact species, "
-        "make/model, brand, or type. Reply in EXACTLY this format, one per "
-        "line, nothing else:\n"
+        "Identify it as SPECIFICALLY as the image actually supports — exact "
+        "species, make/model, brand, or type. Base it ONLY on what is clearly "
+        "visible; do NOT guess a specific identity the image does not support. "
+        "If the crop is too dark, blurry, or ambiguous to tell, give your best "
+        "GENERAL guess and set CONFIDENCE to low. Use high confidence only when "
+        "the identification is unmistakable. Reply in EXACTLY this format, one "
+        "per line, nothing else:\n"
         "ID: <a SHORT specific name, 2-5 words, no full sentence — "
         "e.g. 'Northern Cardinal', 'Toyota Tacoma', 'office chair'>\n"
         "CONFIDENCE: <high|medium|low>\n"

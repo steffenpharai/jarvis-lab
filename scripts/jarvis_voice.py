@@ -1576,7 +1576,7 @@ class H(BaseHTTPRequestHandler):
             self._send_file(SESSION_DIR / tid / "frame.jpg", "image/jpeg")
         elif p.startswith("/inv/"):
             # /inv/<inv_id>/<file>.jpg  — investigate artifacts (full/zoom)
-            parts = p.split("/")
+            parts = p.split("?", 1)[0].split("/")
             if len(parts) >= 4:
                 d, f = parts[2], parts[3]
                 if "/" in d or ".." in d or "/" in f or ".." in f:
