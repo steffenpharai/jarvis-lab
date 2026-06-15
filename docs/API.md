@@ -230,3 +230,46 @@ The 512×384 frame that was actually fed to the VLM for that turn.
   (`ThreadingHTTPServer`). Each turn runs in its own daemon thread.
   Concurrent turns are technically allowed but compete for the GPU; in
   practice the client serializes.
+
+---
+
+## v3 endpoints (vision, memory, agent, transparency)
+
+### Vision / investigate
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/investigate` | start the locate→enhance→zoom→identify→web pipeline. Body: `{subject?, point?:[x,y], region?:[x,y,w,h], web?}` → `{turn_id}`; stream phases via `GET /events/<turn_id>` (capturing, enhancing, locating, located, zooming, zoomed, identifying, identified, researching, researched, done) |
+| GET | `/inv/<id>/<file>.jpg` | investigate artifacts (`full.jpg`, `zoom.jpg`) |
+| GET | `/snapshot.jpg[?t=…]` | latest camera JPEG (tolerates a cache-buster query) |
+
+### Visual memory & entities (the world model)
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/memory/visual/recent` | recent keyframes `{items:[{id,ts,caption,objects,frame_url,source}], enabled, count}` |
+| GET | `/memory/visual/search?q=` | FTS over captions/objects |
+| POST | `/memory/visual/capture` | force-capture a keyframe now |
+| POST | `/memory/visual/{enable,disable}` | toggle the ambient captioner |
+| GET | `/memory/entities` | entity registry (top by count+recency) |
+| GET | `/memory/entity?label=` | entity dossier: sightings, first/last seen, co-occurring (linked) entities |
+| GET | `/memory/graph` | co-occurrence graph `{nodes,edges}` for the link-chart |
+| GET | `/vmem/<file>.jpg` | a visual-memory keyframe |
+
+### Proactive watch
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/watch/rules` | list rules |
+| POST | `/watch/rules` | add `{text}` |
+| POST | `/watch/rules/<id>/{toggle,delete}` | manage a rule |
+| POST | `/watch/test` | force-evaluate all rules against the current view |
+
+### Tools & agent (transparency)
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/tools` | capability catalog (name, description, schema, category, safety) |
+| GET | `/tools/calls?limit=` | tool-call audit ledger |
+| POST | `/tool/<name>?confirm=1` | invoke a single tool. Body: `{args:{…}}` |
+| POST | `/agent` | run the ReAct loop. Body: `{question, max_steps?, use_frame?}` |
+
+### Telemetry
+`GET /metrics` now also returns: `owl_up`, `watch_count`, `uptime_s`,
+`vmem_count`, `vmem_enabled`, `tool_count`, `agent_mode_enabled`.

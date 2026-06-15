@@ -295,3 +295,133 @@ screen.").
 | Frame K/V cache across turns| Reuse vision encoder K/V for follow-ups on the same scene (pHash gate) |
 | Region-of-interest queries  | Browser-side crop rect → server crops frame before sending to VLM |
 | Streaming TTS               | Sentence-split the VLM stream, synthesize each sentence as it arrives |
+
+---
+
+## 12. v3 — Vision, Agent, World-Model & Operational HUD (2026-06)
+
+Everything from §1–§11 shipped; this section documents the layers added on top
+to turn the conversational VLM into an Iron-Man-style agent with a
+Palantir/Anduril-grade interface. All of it is local-by-default and fits the
+8 GB budget; the engineering to make it fit is the interesting part.
+
+### 12.1 Dual-loop + VLM serialization (the core constraint)
+
+Two loops share one `llama-server`:
+
+- **Interactive loop** (priority): user turns, `investigate`, agent tool calls.
+- **Ambient loop** (yields): the visual-memory captioner, the watcher, live
+  narration.
+
+A single non-reentrant lock, `jarvis_tools.VLM_BUSY`, serializes **all** VLM
+image inference. `stream_vlm(..., priority=True)` blocks to acquire it;
+background callers pass `priority=False` and **skip** (returning
+`{"skipped": True}`) when it's held. This was added after concurrent mmproj
+image calls were found to SIGSEGV the server on the 8 GB box — the single most
+important stability fix. The ambient captioner also gates on
+`LAST_USER_ACTIVITY` so it never competes during a burst of interaction.
+
+### 12.2 The `investigate` pipeline (vision drill-down)
+
+`jarvis_tools.run_investigate()` is a deterministic SSE pipeline (not left to the
+3B to chain), emitting a phase per step so the HUD can animate it:
+
+```
+capture (HD) → measure luma → low-light ENHANCE (auto-tuned) →
+LOCATE (point-tap | explicit region | open-vocab grid-cell voting | OWL box) →
+digital ZOOM (crop + enhance + Lanczos upscale, up to 4×) →
+fine-grained IDENTIFY (species/model/brand + confidence) →
+WEB lookup (cleaned query → Wikipedia + scraped web results) → done
+```
+
+Localization without a detector uses **grid-cell voting** (ask the VLM which
+cell of a 4×3 grid holds the subject — far more reliable on a 3B than pixel
+regression), padded generously. Tap-to-investigate is the reliable hero path.
+The web query is cleaned and junk-guarded (a failed "unknown" identification
+never web-searches the literal word). Endpoint: `POST /investigate` → SSE on
+`/events/<id>`; artifacts served from `/inv/<id>/*.jpg`.
+
+### 12.3 Visual memory & world model
+
+An ambient, scene-gated captioner (`VisualMemory`) writes a keyframe + one-line
+caption + object list to the `visual_memory` table (+ FTS5) whenever the scene
+changes (pHash gate) and the user is idle. From that single stream we derive:
+
+- **Recall** — `recall_visual("where did I last see X")` over FTS.
+- **Entity registry** — `vmem_entities()` aggregates per-frame object lists into
+  distinct entities (label, sighting count, last-seen, frame).
+- **Co-occurrence graph** — `vmem_graph()` / `entity_detail()` link entities that
+  appear in the same keyframes (the Palantir object-linking core); the inspector
+  lets you pivot between linked entities.
+
+No second model, no GPU cost beyond the captioner's own VLM call.
+
+### 12.4 Proactive watcher
+
+Natural-language watch rules ("alert me if X") are evaluated by a single batched
+VLM YES/NO call per scene-change keyframe, debounced per rule, firing the
+existing notification system (toast + Piper TTS). The Ambient.ai-Pulsar pattern:
+cheap trigger → VLM reasons → alert.
+
+### 12.5 Tool registry + ReAct loop
+
+`jarvis_tools.ToolRegistry` holds 90+ tools across vision / web / reason /
+productivity / memory / self / smart-home, each with a JSON schema and safety
+level. `agentic_loop()` runs plan → act → observe (parsing `<tool_call>` tags,
+dispatching, feeding results back) until a natural answer. Cloud-frontier tools
+(`ask_claude`/`ask_gpt`/`ask_gemini`/`escalate`) are registered only when
+`JARVIS_ALLOW_CLOUD=1` — **off by default**.
+
+### 12.6 NanoOWL sidecar + the co-residency wall
+
+`owl_sidecar.py` runs OWL-ViT patch32 + TensorRT in the `dustynv/nanoowl`
+container, exposing `POST /detect` (open-vocab boxes). The engine builds at
+~60 qps. **But it does not reliably co-reside with the full VLM on 8 GB** —
+the container OOM-kills (exit 137) or fails PyTorch CUDA/NVML init when
+`llama-server` holds ~3.8 GB. So `jarvis-owl.service` is installed but **disabled
+by default**; `investigate`/`detect_objects` degrade gracefully to grid-cell
+localization when the sidecar is down. Real-time detection co-residency wants an
+Orin NX 16 GB, or running OWL with the VLM stopped.
+
+### 12.7 The COP HUD (`jarvis_ui.html`)
+
+A single self-contained file. Layout: full-bleed camera **world view** →
+central **companion orb** → ephemeral conversation captions → collapsible
+right **intel rail** → floating **command dock**.
+
+- **Transparency console** (Anduril/Palantir): SYSTEMS rail with live link-health
+  dots + resources + knowledge counts + **telemetry sparklines** + a live
+  **OPERATION** readout + a **REASONING** stream (plan→act→observe), plus an
+  Activity tool-call ledger and a Tools capability catalog.
+- **Visualizations** (three.js / canvas, all on the *viewer's* GPU): audio-reactive
+  fresnel **orb**, edge-glow **voice presence**, **link-chart** (force-directed
+  entity graph), **3D point-cloud** (depth-from-luminance scene scan), **timeline
+  scrubber**, **entity tracks** on the feed, **radar sweep**, targeting frame, and
+  a **boot/power-on sequence**.
+- **⌘K spotlight** global search across entities/tools/memory.
+- Rendering split per 2026 research: crisp chrome (reticles, text, panels) in
+  SVG/CSS; only glow-dependent 3D FX in WebGL. three.js loads from CDN (vendor
+  locally for offline/AP). Screenshots of the live page are blocked by its
+  persistent SSE + RAF (network/compositor never idle) — verify via DOM.
+
+### 12.8 Persona & voice
+
+Default persona is **J.A.R.V.I.S.** — refined, addresses the user as *sir*, dry
+British wit, concise, with anti-hallucination ground rules retained. TTS voice is
+**Piper `en_GB-alan-medium`** (British male).
+
+### 12.9 Camera controls
+
+`CameraStreamer` re-asserts the C615's auto modes on every capture
+(`focus_automatic_continuous=1`, `auto_exposure=3`, `white_balance_automatic=1`,
+`sharpness=160`) — a manual-focus webcam was the root cause of blurry,
+misread labels; this survives reboots.
+
+### 12.10 Research basis
+
+The design follows the 2026 frontier convergence (researched, cited in project
+memory): Figure Helix **dual-loop**, Anduril Lattice **common-operating-picture**
++ entity model, Palantir Gotham **object-centric cross-linking**, Project Astra
+**spatial-temporal memory**, Ambient.ai Pulsar **proactive monitoring**, and the
+universal edge recipe *cheap-detector → keyframed VLM → local memory → cloud
+only when asked*.

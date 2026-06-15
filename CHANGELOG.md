@@ -1,3 +1,33 @@
+## 2026-06-15 — session 3 (agent + world-model + operational HUD)
+
+Turned the conversational VLM into an Iron-Man-style agent with a
+Palantir/Anduril-grade interface. Highlights (newest first):
+
+- **Eye candy / visualizations** — boot/power-on sequence; ⌘K global search
+  spotlight; force-directed entity link-chart; 3D depth-from-luminance point
+  cloud; timeline scrubber; telemetry sparklines; radar scan sweep; targeting
+  frame; edge-glow voice presence; audio-reactive three.js companion orb.
+- **Transparency console** — SYSTEMS rail (live link-health + resources +
+  knowledge counts), live OPERATION readout, plan→act→observe REASONING stream,
+  Tools capability catalog, Activity tool-call ledger.
+- **Entity registry + object cross-linking** — co-occurrence graph + dossiers
+  with linked-entity pivoting (Palantir Gotham core); `/memory/entities`,
+  `/memory/entity`, `/memory/graph`.
+- **Spatial-temporal visual memory** — ambient scene-gated captioner +
+  `recall_visual` ("where did I last see X").
+- **Proactive watch** — natural-language alert rules → toast + TTS.
+- **`investigate` pipeline** — locate → low-light enhance → digital zoom →
+  fine-grained identify → web lookup; tap-to-investigate.
+- **COP layout** — camera as full-bleed world view, central companion orb,
+  collapsible intel rail, floating command dock.
+- **J.A.R.V.I.S. persona** + British male voice (Piper `en_GB-alan`).
+- **Stability/hardware** — `VLM_BUSY` serialization lock (fixed concurrent-
+  inference SIGSEGV); camera autofocus/AE/AWB re-assert (fixed misreads);
+  NanoOWL sidecar (opt-in; documented 8 GB co-residency wall); web-search guard.
+- **NanoOWL open-vocab detector** + `detect_objects` (opt-in sidecar).
+- **90+ tool registry + ReAct loop**; cloud escalation gated off by default.
+- **Docs** — README/ARCHITECTURE/API refreshed for public release.
+
 ## 2026-06-06 — session 2 (full roadmap shipped)
 
 This session took the v1 dashboard from "polished MVP" to feature-rich
