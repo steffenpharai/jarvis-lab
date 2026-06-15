@@ -2,6 +2,7 @@ models/
 build/
 logs/
 piper/
+owl-data/
 test_images/*.jpg
 test_images/*.png
 __pycache__/
