@@ -771,6 +771,26 @@ textarea#text::placeholder { color: var(--dim); }
 .recall-item img { width: 100%; height: 84px; object-fit: cover; display: block; cursor: zoom-in; }
 .recall-item .ri-when { font: 600 9px/1 'Geist Mono', monospace; color: var(--accent); padding: 5px 7px 2px; }
 .recall-item .ri-cap { font-size: 11px; color: var(--muted); padding: 0 7px 7px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* ===== proactive watch (settings) ===== */
+.watch-add { display: flex; gap: 7px; margin-bottom: 9px; }
+.watch-add input { flex: 1; }
+.watch-addbtn { font: 600 12px/1 'Geist', sans-serif; color: white; background: var(--accent); border: none; padding: 0 14px; border-radius: var(--r-sm); cursor: pointer; }
+.watch-addbtn:hover { box-shadow: 0 0 12px var(--accent-glow); }
+.watch-rules { display: grid; gap: 6px; margin-bottom: 9px; }
+.watch-empty { color: var(--dim); font-size: 12px; padding: 4px 0; }
+.watch-rule { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg); }
+.watch-rule.off { opacity: .5; }
+.watch-rule .wtext { flex: 1; font-size: 12.5px; }
+.watch-rule .wfired { font: 600 9px/1 'Geist Mono', monospace; color: var(--warn); border: 1px solid rgba(245,158,11,0.3); border-radius: var(--r-pill); padding: 2px 6px; }
+.watch-toggle, .watch-del { background: transparent; border: none; color: var(--muted); cursor: pointer; display: inline-flex; align-items: center; padding: 2px; border-radius: 4px; }
+.watch-toggle:hover, .watch-del:hover { color: var(--text); background: var(--raised); }
+.watch-rule:not(.off) .watch-toggle { color: var(--ok); }
+.watch-del { font-size: 18px; line-height: 1; width: 22px; height: 22px; justify-content: center; }
+.watch-test { width: 100%; margin-bottom: 6px; font: 600 11px/1 'Geist', sans-serif; color: var(--accent); background: transparent; border: 1px dashed var(--accent-soft); padding: 9px; border-radius: var(--r-sm); cursor: pointer; }
+.watch-test:hover { background: var(--accent-soft); }
+.watch-test:disabled { opacity: .6; cursor: default; }
+.toast.warn { border-color: var(--warn); color: var(--warn); }
 </style>
 
 <body>
@@ -923,6 +943,21 @@ textarea#text::placeholder { color: var(--dim); }
       <label>WAKE WORD ("HEY JARVIS")</label>
       <label class=toggle><input type=checkbox id=wakeword><span>Listen continuously for "Hey Jarvis" and auto-record</span></label>
       <span class=hint>openWakeWord on CPU · ~50 MB RAM · uses shared mic bus</span>
+    </div>
+    <div class=field>
+      <label>PROACTIVE WATCH · AMBIENT ALERTS</label>
+      <div class=watch-add>
+        <input type=text id=watchinput placeholder='Alert me if… e.g. "a person is at the door"'>
+        <button class=watch-addbtn id=watchadd>Add</button>
+      </div>
+      <div id=watch-rules class=watch-rules></div>
+      <button class=watch-test id=watchtest>Test all rules against the current view</button>
+      <span class=hint>Jarvis checks these whenever the scene changes and alerts you (toast + voice). Each alert is debounced ~2&nbsp;min.</span>
+    </div>
+    <div class=field>
+      <label>VISUAL MEMORY (AMBIENT CAPTIONING)</label>
+      <label class=toggle><input type=checkbox id=vmemtoggle><span>Continuously log what the camera sees so it's searchable later</span></label>
+      <span class=hint>Powers the “Seen” tab and “where did I last see…” recall · scene-gated, yields to your questions</span>
     </div>
     <div class=field>
       <label>SYSTEM TELEMETRY</label>
@@ -1700,6 +1735,8 @@ function submit() {
     const parts = v.slice(1).split(/\s+/);
     runCmd(parts[0], parts.slice(1).join(' ')); return;
   }
+  const wq = watchPhrase(v);
+  if (wq) { text.value = ''; text.style.height = 'auto'; doWatch(wq); return; }
   const rq = recallQuery(v);
   if (rq !== null) { text.value = ''; text.style.height = 'auto'; doRecall(rq); return; }
   const subj = investigateSubject(v);
@@ -1938,8 +1975,8 @@ function attachNotifications() {
                             setTimeout(attachNotifications, 5000); };
 }
 function showNotification(n) {
-  const kindLabel = n.kind === 'reminder' ? 'Reminder' : (n.kind || 'Notice');
-  toast(`${kindLabel}: ${n.text || ''}`, 'ok');
+  const kindLabel = n.kind === 'reminder' ? 'Reminder' : (n.kind === 'alert' ? '⚠ Alert' : (n.kind || 'Notice'));
+  toast(`${kindLabel}: ${n.text || ''}`, n.kind === 'alert' ? 'warn' : 'ok');
   if (n.audio_url) {
     // play through the same audio context as TTS replies
     (async () => {
@@ -2051,6 +2088,23 @@ $('#seencap').addEventListener('click', async () => {
 });
 
 /* recall routing: "where/when did you see X", "have you seen X" -> visual memory */
+function watchPhrase(v) {
+  let m = v.match(/^\s*(?:please\s+)?(?:alert|notify|tell|let|ping|warn)\s+me\s+(?:know\s+)?(?:if|when|whenever)\s+(.+?)\s*\.?$/i);
+  if (m) return m[1].trim();
+  m = v.match(/^\s*(?:watch|keep an eye out)\s+for\s+(.+?)\s*\.?$/i);
+  if (m) return m[1].trim();
+  return null;
+}
+async function doWatch(condition) {
+  makeUserMsg('Alert me if ' + condition, 'watch');
+  const jmsg = makeJarvisMsg('watch');
+  const bubble = jmsg.querySelector('.bubble');
+  try {
+    await addWatch(condition);
+    finalizeReplyMarkdown(bubble, '✓ Watching — I\'ll alert you (toast + voice) when **' + condition + '**. Manage watches in Settings.');
+  } catch (e) { finalizeReplyMarkdown(bubble, 'Could not set up that watch.'); }
+  bubble.classList.remove('streaming');
+}
 function recallQuery(v) {
   let m = v.match(/^\s*(?:where|when)\s+(?:did|have)\s+(?:you|i)\s+(?:last\s+)?(?:see|seen|leave|put)\s+(?:my |the |a |an )?(.+?)\s*\??$/i);
   if (m) return m[1].trim();
@@ -2211,7 +2265,57 @@ async function loadSettings() {
   row.innerHTML = Object.keys(PRESETS_LOCAL).map(name =>
     '<button class="preset-chip ' + (name === s.preset ? 'active' : '') + '" data-name="' + name + '">' + name + '</button>'
   ).join('') + '<span class="preset-chip" style="color:var(--dim);border-style:dashed">custom</span>';
+  loadWatch();
+  try { const m = await (await fetch('/metrics')).json(); const vt = $('#vmemtoggle'); if (vt) vt.checked = m.vmem_enabled !== false; } catch {}
 }
+
+/* ===== proactive watch rules ===== */
+async function loadWatch() {
+  try {
+    const j = await (await fetch('/watch/rules')).json();
+    renderWatch(j.rules || []);
+  } catch (e) { /* ignore */ }
+}
+function renderWatch(rules) {
+  const host = $('#watch-rules'); if (!host) return;
+  if (!rules.length) { host.innerHTML = '<div class=watch-empty>No active watches. Add one above, or just say “alert me if…”.</div>'; return; }
+  host.innerHTML = rules.map(r =>
+    '<div class="watch-rule' + (r.active ? '' : ' off') + '">' +
+      '<button class=watch-toggle data-id="' + r.id + '" title="' + (r.active ? 'Pause' : 'Resume') + '">' +
+        (r.active ? '<svg viewBox="0 0 24 24" width=12 height=12 fill=none stroke=currentColor stroke-width=2><circle cx=12 cy=12 r=9/><path d="M12 7v5l3 2"/></svg>' : '<svg viewBox="0 0 24 24" width=12 height=12 fill=none stroke=currentColor stroke-width=2><circle cx=12 cy=12 r=9/></svg>') +
+      '</button>' +
+      '<span class=wtext>' + escapeHtml(r.text) + '</span>' +
+      (r.fire_count ? '<span class=wfired title="times alerted">' + r.fire_count + '×</span>' : '') +
+      '<button class=watch-del data-id="' + r.id + '" title=Remove>&times;</button>' +
+    '</div>'
+  ).join('');
+}
+async function addWatch(text) {
+  text = (text || '').trim(); if (!text) return;
+  const j = await (await fetch('/watch/rules', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text})})).json();
+  if (j.rules) renderWatch(j.rules);
+}
+$('#watchadd').onclick = async () => { const i = $('#watchinput'); await addWatch(i.value); i.value = ''; };
+$('#watchinput').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); $('#watchadd').click(); } });
+$('#watch-rules').addEventListener('click', async (e) => {
+  const del = e.target.closest('.watch-del'); const tog = e.target.closest('.watch-toggle');
+  if (del) { const j = await (await fetch('/watch/rules/' + del.dataset.id + '/delete', {method:'POST'})).json(); renderWatch(j.rules || []); }
+  else if (tog) { const j = await (await fetch('/watch/rules/' + tog.dataset.id + '/toggle', {method:'POST'})).json(); renderWatch(j.rules || []); }
+});
+$('#watchtest').onclick = async () => {
+  const b = $('#watchtest'); b.disabled = true; b.textContent = 'Checking the current view…';
+  try {
+    const j = await (await fetch('/watch/test', {method:'POST'})).json();
+    if (j.fired && j.fired.length) toast('Alert: ' + j.fired.map(f=>f.text).join('; '), 'warn');
+    else toast('No watch conditions are true right now', 'ok');
+    loadWatch();
+  } catch (e) { toast('Test failed', 'error'); }
+  b.disabled = false; b.textContent = 'Test all rules against the current view';
+};
+$('#vmemtoggle') && ($('#vmemtoggle').onchange = async (e) => {
+  await fetch('/memory/visual/' + (e.target.checked ? 'enable' : 'disable'), {method:'POST'});
+  toast('Visual memory ' + (e.target.checked ? 'on' : 'off'), 'ok');
+});
 $('#presetrow').addEventListener('click', (e) => {
   const b = e.target.closest('.preset-chip[data-name]'); if (!b) return;
   const name = b.dataset.name;

@@ -3173,6 +3173,62 @@ def remember_now(ctx) -> dict:
             "objects": rec.get("objects")}
 
 
+@tool(
+    "watch_add",
+    description="Set up a proactive alert. Give a natural-language condition "
+                "and Jarvis will watch the camera and notify when it becomes "
+                "true. Use for 'alert me if/when X', 'tell me if someone X', "
+                "'let me know when X'. e.g. 'a person is at the door', "
+                "'the dog is on the couch', 'someone is near the desk'.",
+    category="self",
+    schema={
+        "type": "object",
+        "properties": {
+            "condition": {"type": "string",
+                          "description": "what to watch for, as a statement "
+                                         "that is true when it should alert"},
+        },
+        "required": ["condition"],
+    },
+    needs_ctx=True,
+)
+def watch_add(ctx, condition: str) -> dict:
+    condition = (condition or "").strip()
+    if not condition:
+        raise ToolError("condition required")
+    rid = ctx.memory.watch_add(condition)
+    return {"added": True, "id": rid, "condition": condition,
+            "note": "Jarvis will check this whenever the scene changes."}
+
+
+@tool(
+    "watch_list",
+    description="List the active proactive watch/alert rules.",
+    category="self",
+    needs_ctx=True,
+)
+def watch_list(ctx) -> dict:
+    rules = ctx.memory.watch_list()
+    return {"count": len(rules),
+            "rules": [{"id": r["id"], "condition": r["text"],
+                       "active": r["active"], "times_fired": r["fire_count"]}
+                      for r in rules]}
+
+
+@tool(
+    "watch_remove",
+    description="Remove/stop a proactive watch rule by its id (from watch_list).",
+    category="self",
+    schema={"type": "object",
+            "properties": {"id": {"type": "integer"}},
+            "required": ["id"]},
+    needs_ctx=True,
+)
+def watch_remove(ctx, id: int) -> dict:
+    ctx.memory.watch_remove(int(id))
+    return {"removed": True, "id": int(id)}
+
+
 # ============================================================================
 # AGENTIC LOOP  (plan -> act -> observe -> re-plan, until natural answer)
 # ============================================================================
@@ -3208,7 +3264,7 @@ DEFAULT_AGENT_ALLOW: set[str] = {
     # self
     "system_status", "get_logs", "enable_live_mode",
     "disable_live_mode", "set_persona", "wake_word_off",
-    "health_check",
+    "health_check", "watch_add", "watch_list", "watch_remove",
     # identity (Sprint D)
     "profile_get",
     # smart home (Tier 3)

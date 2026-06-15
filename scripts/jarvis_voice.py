@@ -207,6 +207,17 @@ class Memory:
         INSERT INTO vmem_fts(vmem_fts, rowid, caption, objects)
             VALUES('delete', old.id, old.caption, old.objects);
     END;
+
+    -- Proactive "watch" rules: natural-language conditions the VLM evaluates on
+    -- scene-change keyframes and alerts on (ambient-agent monitoring).
+    CREATE TABLE IF NOT EXISTS watch_rules (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        text TEXT NOT NULL,
+        active INTEGER DEFAULT 1,
+        created_at REAL NOT NULL,
+        last_fired REAL DEFAULT 0,
+        fire_count INTEGER DEFAULT 0
+    );
     """
 
     def __init__(self, path: Path):
@@ -370,6 +381,41 @@ class Memory:
         return {"id": r[0], "ts": r[1], "caption": r[2] or "",
                 "objects": r[3] or "", "frame_url": f"/vmem/{r[4]}" if r[4] else "",
                 "source": r[5] or ""}
+
+    # --- watch rules (proactive monitoring) ------------------------------
+    def watch_add(self, text: str) -> int:
+        with self.lock:
+            cur = self._con.execute(
+                "INSERT INTO watch_rules (text, active, created_at) "
+                "VALUES (?,1,?)", (text, time.time()))
+            return cur.lastrowid
+
+    def watch_list(self, only_active: bool = False) -> list[dict]:
+        sql = ("SELECT id, text, active, created_at, last_fired, fire_count "
+               "FROM watch_rules")
+        if only_active:
+            sql += " WHERE active=1"
+        sql += " ORDER BY created_at DESC"
+        with self.lock:
+            rows = self._con.execute(sql).fetchall()
+        return [{"id": r[0], "text": r[1], "active": bool(r[2]),
+                 "created_at": r[3], "last_fired": r[4], "fire_count": r[5]}
+                for r in rows]
+
+    def watch_set_active(self, rid: int, active: bool) -> None:
+        with self.lock:
+            self._con.execute("UPDATE watch_rules SET active=? WHERE id=?",
+                              (1 if active else 0, rid))
+
+    def watch_remove(self, rid: int) -> None:
+        with self.lock:
+            self._con.execute("DELETE FROM watch_rules WHERE id=?", (rid,))
+
+    def watch_mark_fired(self, rid: int) -> None:
+        with self.lock:
+            self._con.execute(
+                "UPDATE watch_rules SET last_fired=?, fire_count=fire_count+1 "
+                "WHERE id=?", (time.time(), rid))
 
     @staticmethod
     def _row(r) -> dict:
@@ -1440,7 +1486,8 @@ class VisualMemory:
         self.last_phash = ph
         self.last_cap_ts = time.time()
         return {"id": rid, "caption": scene, "objects": objects,
-                "frame_url": f"/vmem/{fname}", "source": source}
+                "frame_url": f"/vmem/{fname}", "frame_path": str(fpath),
+                "source": source}
 
     def _run(self) -> None:
         # small initial delay so the camera + VLM are up
@@ -1457,7 +1504,11 @@ class VisualMemory:
                     changed = (self.last_phash is None
                                or hamming(ph, self.last_phash) > PHASH_LIVE_GATE)
                     if changed:
-                        self.capture_now(source="ambient")
+                        rec = self.capture_now(source="ambient")
+                        try:
+                            WATCHER.evaluate(Path(rec["frame_path"]))
+                        except Exception as wexc:
+                            print(f"[watch] {wexc}", flush=True)
             except Exception as exc:
                 print(f"[vmem] {exc}", flush=True)
             if self._stop.wait(self.interval_s):
@@ -1465,6 +1516,62 @@ class VisualMemory:
 
 
 VMEM = VisualMemory()
+
+
+# ----- proactive watcher: evaluate natural-language alert rules on keyframes ---
+class Watcher:
+    """Ambient monitoring: the VLM checks active natural-language conditions
+    against scene-change keyframes and fires notifications. One batched VLM
+    call covers all active rules; each rule is debounced by a cooldown."""
+
+    COOLDOWN_S = 120.0
+
+    def evaluate(self, frame_path: Path) -> list[dict]:
+        rules = MEMORY.watch_list(only_active=True)
+        now = time.time()
+        due = [r for r in rules if now - (r["last_fired"] or 0) > self.COOLDOWN_S]
+        if not due:
+            return []
+        numbered = "\n".join(f"{i+1}) {r['text']}" for i, r in enumerate(due))
+        prompt = (
+            "You are a vigilant monitor watching a live camera. For EACH numbered "
+            "condition below, answer strictly YES or NO based ONLY on what is "
+            "actually visible in this image right now. Do not guess.\n\n"
+            f"{numbered}\n\n"
+            "Reply one line per condition, exactly like '1: YES' or '2: NO'. "
+            "Nothing else."
+        )
+        cancel = threading.Event()
+        text, _u = stream_vlm(prompt, frame_path, cancel, lambda d: None,
+                              include_history=False, read_timeout_s=20.0)
+        fired = []
+        for i, r in enumerate(due):
+            m = re.search(rf"{i+1}\s*[:\-]\s*(yes|no)", text or "", re.I)
+            if m and m.group(1).lower() == "yes":
+                self._fire(r)
+                fired.append(r)
+        return fired
+
+    def _fire(self, rule: dict) -> None:
+        note = {"kind": "alert", "text": rule["text"], "rule_id": rule["id"]}
+        try:
+            ndir = SESSION_DIR / "notifications"
+            ndir.mkdir(parents=True, exist_ok=True)
+            wav = ndir / f"watch-{rule['id']}-{int(time.time())}.wav"
+            synthesize(f"Heads up. {rule['text']}", wav)
+            if wav.exists():
+                note["audio_url"] = f"/audio_note/{wav.name}"
+        except Exception as exc:  # noqa: BLE001
+            note["tts_error"] = str(exc)
+        try:
+            jarvis_tools.TOOLS.emit_notification(note)
+        except Exception:
+            pass
+        MEMORY.watch_mark_fired(rule["id"])
+        print(f"[watch] FIRED rule #{rule['id']}: {rule['text']!r}", flush=True)
+
+
+WATCHER = Watcher()
 
 
 # ----- wake-word integration (triggers a voice turn when "Hey Jarvis") --------
@@ -1740,6 +1847,8 @@ class H(BaseHTTPRequestHandler):
             self._send_json(200, {"items": MEMORY.search(q, 50), "q": q})
         elif p == "/memory/pinned":
             self._send_json(200, {"items": MEMORY.pinned()})
+        elif p == "/watch/rules":
+            self._send_json(200, {"rules": MEMORY.watch_list()})
         elif p == "/memory/visual/recent":
             self._send_json(200, {"items": MEMORY.vmem_recent(60),
                                   "enabled": VMEM.enabled,
@@ -1951,6 +2060,39 @@ class H(BaseHTTPRequestHandler):
                 SETTINGS["live_interval_s"] = 8
                 SETTINGS["scene_cache_enabled"] = True
             self._send_json(200, {"ok": True})
+        elif p == "/watch/rules":
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                payload = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "bad json"}); return
+            txt = (payload.get("text") or "").strip()
+            if not txt:
+                self._send_json(400, {"error": "text required"}); return
+            rid = MEMORY.watch_add(txt)
+            self._send_json(200, {"ok": True, "id": rid,
+                                  "rules": MEMORY.watch_list()})
+        elif p.startswith("/watch/rules/") and p.endswith("/delete"):
+            rid = int(p.split("/")[3])
+            MEMORY.watch_remove(rid)
+            self._send_json(200, {"ok": True, "rules": MEMORY.watch_list()})
+        elif p.startswith("/watch/rules/") and p.endswith("/toggle"):
+            rid = int(p.split("/")[3])
+            cur = {r["id"]: r for r in MEMORY.watch_list()}.get(rid)
+            if cur is None:
+                self._send_json(404, {"error": "no such rule"}); return
+            MEMORY.watch_set_active(rid, not cur["active"])
+            self._send_json(200, {"ok": True, "rules": MEMORY.watch_list()})
+        elif p == "/watch/test":
+            try:
+                rec = VMEM.capture_now(source="manual")
+                fired = WATCHER.evaluate(Path(rec["frame_path"]))
+                self._send_json(200, {"ok": True, "frame_url": rec["frame_url"],
+                                      "fired": [{"id": r["id"], "text": r["text"]}
+                                                for r in fired]})
+            except Exception as e:  # noqa: BLE001
+                self._send_json(500, {"ok": False, "error": str(e)})
         elif p == "/memory/visual/capture":
             try:
                 rec = VMEM.capture_now(source="manual")
