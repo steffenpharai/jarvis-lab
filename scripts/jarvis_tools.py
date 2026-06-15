@@ -551,6 +551,37 @@ def read_all_text(ctx) -> dict:
 
 
 @tool(
+    "export_dataset",
+    description="Export the on-device visual memory + grounded Q&A into a "
+                "portable, standards-aligned training dataset (Open-X / LeRobot "
+                "JSONL + frames) with a consent/provenance card. Returns counts "
+                "and a download URL. Observational vision-language data only "
+                "(no robot action labels — that needs the Zip robot drive loop).",
+    category="memory",
+    schema={
+        "type": "object",
+        "properties": {
+            "since_days": {"type": "number",
+                           "description": "only include data newer than N days"},
+            "limit": {"type": "integer",
+                      "description": "max keyframes (default 5000, cap 50000)"},
+            "include_frames": {"type": "boolean",
+                               "description": "copy the JPEG pixels (default true)"},
+        },
+    },
+)
+def export_dataset(since_days: float | None = None, limit: int = 5000,
+                   include_frames: bool = True) -> dict:
+    body = {"limit": int(limit), "include_frames": bool(include_frames)}
+    if since_days is not None:
+        body["since_days"] = float(since_days)
+    r = HTTP.post("http://127.0.0.1:8085/dataset/export", json=body,
+                  timeout=httpx.Timeout(180.0, connect=5.0))
+    r.raise_for_status()
+    return r.json()
+
+
+@tool(
     "multi_frame_compare",
     description="Capture N frames spaced over the next few seconds and "
                 "compare them. Useful for change detection and motion.",

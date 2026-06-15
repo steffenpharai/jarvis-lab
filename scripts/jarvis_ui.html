@@ -1210,6 +1210,9 @@ textarea#text::placeholder { color: var(--dim); }
       <button class=iconbtn id=intelbtn title='Intel panel (conversation, entities, watches)' aria-label='intel panel'>
         <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='3' y='3' width='18' height='18' rx='2'/><path d='M15 3v18'/><path d='M7 8h4M7 12h4'/></svg>
       </button>
+      <button class=iconbtn id=datasetbtn title='Training data — export visual memory as a dataset' aria-label='training data'>
+        <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><ellipse cx='12' cy='5' rx='8' ry='3'/><path d='M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5'/><path d='M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6'/></svg>
+      </button>
       <button class=iconbtn id=settingsbtn title='Settings' aria-label=settings>
         <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='3'/><path d='M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z'/></svg>
       </button>
@@ -1492,6 +1495,27 @@ textarea#text::placeholder { color: var(--dim); }
   </div>
   <canvas id=graphcanvas></canvas>
   <div class=graph-hint>drag to pan · click a node to inspect</div>
+</div>
+
+<div class=modal id=dataset-modal>
+  <div class=modal-content>
+    <h2>TRAINING DATA · EXPORT</h2>
+    <p style="font-size:12.5px;color:var(--muted);margin:-6px 0 14px;line-height:1.5">
+      Auto-annotated <b>vision-language</b> data captured on-device — every frame
+      ships with a VLM caption + object list at zero labeling cost. Exports to a
+      portable Open-X / LeRobot-friendly bundle (JSONL + frames + consent card).
+      <br><span style="opacity:.8">Observational data — no robot action labels (that needs the Zip drive loop).</span>
+    </p>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px">
+      <button class=chip id=ds-export>⬇ Export dataset</button>
+      <label style="font-size:12px;color:var(--muted)">last
+        <input id=ds-days type=number value=0 min=0 step=1
+               style="width:52px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:3px 6px;font-size:12px"> days
+        <span style="opacity:.6">(0 = all)</span></label>
+      <span id=ds-status style="font-size:12px;color:var(--muted)"></span>
+    </div>
+    <div id=ds-list style="display:flex;flex-direction:column;gap:8px;font-size:13px"></div>
+  </div>
 </div>
 
 <div class=modal id=shortcuts-modal>
@@ -3345,6 +3369,50 @@ const shortcutsModal = $('#shortcuts-modal');
 $('#shortcutsbtn').onclick = () => shortcutsModal.classList.add('open');
 shortcutsModal.onclick = (e) => { if (e.target === shortcutsModal) shortcutsModal.classList.remove('open'); };
 
+/* ===== training-data export ===== */
+const datasetModal = $('#dataset-modal');
+function openDataset() { datasetModal.classList.add('open'); loadDatasets(); }
+function closeDataset() { datasetModal.classList.remove('open'); }
+async function loadDatasets() {
+  const list = $('#ds-list');
+  list.innerHTML = '<div style="color:var(--muted)">Loading…</div>';
+  try {
+    const j = await (await fetch('/dataset/exports')).json();
+    const items = j.items || [];
+    if (!items.length) { list.innerHTML = '<div style="color:var(--muted)">No exports yet — click “Export dataset”.</div>'; return; }
+    list.innerHTML = items.map(it => {
+      const c = it.counts || {};
+      const mb = '';
+      return `<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <div style="flex:1;min-width:180px">
+          <div style="font-variant-numeric:tabular-nums">${it.name}</div>
+          <div style="color:var(--muted);font-size:12px">${c.vl_records||0} keyframes · ${c.vqa_records||0} Q&amp;A · ${c.frames_copied||0} frames</div>
+        </div>
+        <a href="${it.download_url}" download style="color:var(--accent);text-decoration:none">⬇ .zip</a>
+        <a href="${it.card_url}" target=_blank rel=noopener style="color:var(--muted);text-decoration:none">card</a>
+      </div>`;
+    }).join('');
+  } catch (e) { list.innerHTML = '<div style="color:var(--muted)">Failed to load exports.</div>'; }
+}
+async function runExport() {
+  const btn = $('#ds-export');
+  if (btn.disabled) return;
+  btn.disabled = true;
+  const days = parseFloat($('#ds-days').value) || 0;
+  $('#ds-status').textContent = 'Exporting…';
+  const body = {}; if (days > 0) body.since_days = days;
+  try {
+    const j = await (await fetch('/dataset/export', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
+    if (j.ok) { toast(`Exported ${j.counts.vl_records} keyframes + ${j.counts.vqa_records} Q&A`, 'ok'); loadDatasets(); }
+    else { toast('Export failed: ' + (j.error || '?'), 'warn'); }
+  } catch (e) { toast('Export failed', 'warn'); }
+  $('#ds-status').textContent = '';
+  btn.disabled = false;
+}
+$('#datasetbtn') && ($('#datasetbtn').onclick = () => datasetModal.classList.contains('open') ? closeDataset() : openDataset());
+$('#ds-export') && ($('#ds-export').onclick = runExport);
+datasetModal.onclick = (e) => { if (e.target === datasetModal) closeDataset(); };
+
 /* ===== global shortcuts ===== */
 document.addEventListener('keydown', (e) => {
   if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -3355,6 +3423,7 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === '/') { e.preventDefault(); text.focus(); text.value = '/'; openPalette(''); }
   else if (e.key === 'Escape') {
     if (shortcutsModal.classList.contains('open')) shortcutsModal.classList.remove('open');
+    else if (datasetModal.classList.contains('open')) closeDataset();
     else if (isStreaming) stopCurrent();
     else if (drawer.classList.contains('open')) closeDrawer();
   }

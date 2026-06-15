@@ -25,6 +25,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import sqlite3
 import struct
 import subprocess
@@ -75,6 +76,8 @@ SESSION_DIR = LAB / "logs/sessions"
 SESSION_DIR.mkdir(parents=True, exist_ok=True)
 VMEM_DIR = SESSION_DIR / "vmem"
 VMEM_DIR.mkdir(parents=True, exist_ok=True)
+EXPORT_DIR = SESSION_DIR / "exports"
+EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
 _STOPWORDS = {
     "the", "a", "an", "is", "are", "was", "were", "did", "do", "does", "you",
@@ -1854,6 +1857,258 @@ def export_markdown() -> str:
     return "\n".join(lines) + "\n"
 
 
+# ----- Training-dataset export ------------------------------------------------
+# Turns the on-device visual memory + grounded Q&A into a portable, standards-
+# aligned dataset (Open-X / LeRobot-friendly JSONL + frames) with a consent /
+# provenance card. This is OBSERVATIONAL vision-language data: there is no
+# embodiment and no action labels (a fixed camera does not act). Action-
+# conditioned trajectories require the Zip robot drive loop — see DATASET_CARD.
+DATASET_EXPORT_VERSION = "jarvis-lab/export-v1"
+
+
+def _objects_to_list(raw) -> list:
+    """visual_memory.objects is stored either as a JSON array or a delimited
+    string depending on the caption-parser path — normalise to a list."""
+    if not raw:
+        return []
+    if isinstance(raw, (list, tuple)):
+        return [str(o).strip() for o in raw if str(o).strip()]
+    s = str(raw).strip()
+    if s.startswith("["):
+        try:
+            v = json.loads(s)
+            if isinstance(v, list):
+                return [str(o).strip() for o in v if str(o).strip()]
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return [p.strip() for p in re.split(r"[;,\n]", s) if p.strip()]
+
+
+def _dataset_card(name: str, info: dict, consent: dict) -> str:
+    c = info["counts"]
+    shape = info["features"]["observation.image"]["shape"]
+    return f"""# Jarvis-Lab dataset — {name}
+
+_Exported {time.strftime('%Y-%m-%d %H:%M:%S')} from an on-device Qwen2.5-VL-3B
+perception loop running fully offline on a Jetson Orin Nano Super (8 GB)._
+
+## What this is
+
+A **vision-language** dataset auto-annotated **at the edge, at capture time** —
+every frame ships with a VLM caption and an object list at zero marginal
+labeling cost. Two streams:
+
+| File | Records | Contents |
+|---|---|---|
+| `data/vision_language.jsonl` | {c['vl_records']} | observational keyframes: image + caption + objects + timestamp |
+| `data/visual_qa.jsonl` | {c['vqa_records']} | grounded Q&A: image + question + answer |
+
+Frames: {c['frames_copied']} copied, {c['frames_missing']} missing. Image
+shape (HxWxC): {shape}.
+
+## Tier — be honest about value
+
+This is **Tier-3 observational vision-language** data, *not* Tier-1 action-
+labeled trajectories. A fixed camera does not act, so **`action` is `null`**
+throughout. It suits VLM / world-model pretraining, perception, and grounded-
+VQA fine-tuning. For action-conditioned (VLA) training, the same auto-
+annotation loop must run on the **Zip robot** drive path, recording
+`frame -> commanded velocity/heading` as the action label.
+
+## Format
+
+Open-X / LeRobot-friendly JSONL. `meta/info.json` declares the feature schema
+and splits; convert to RLDS or a LeRobot `LeRobotDataset` by reading the JSONL
+plus the `frames/` images. Each VL row is modeled as a one-step episode.
+
+## Provenance & consent
+
+- Collection mode: **{consent['collection_mode']}**
+- Location: {consent['location_label']}
+- Operator: {consent['operator']}
+- Capture device: {consent['capture_device']}
+- Consent obtained: **{consent['consent_obtained']}**
+- License: **{consent['license']}**
+- PII: {consent['contains_pii']}
+- Notes: {consent['notes'] or '—'}
+
+> Review frames for personally identifying content before redistribution.
+"""
+
+
+def export_dataset(opts: dict | None = None) -> dict:
+    """Export visual memory + grounded VQA to a portable training dataset.
+
+    opts: since_days (float|None), limit (int, cap 50000),
+          include_frames (bool), include_turns (bool), consent (dict).
+    Returns a summary dict (also persisted as meta/info.json)."""
+    opts = opts or {}
+    now = time.time()
+    since_days = opts.get("since_days")
+    cutoff = (now - float(since_days) * 86400.0) if since_days else None
+    limit = max(1, min(50000, int(opts.get("limit", 5000))))
+    include_frames = bool(opts.get("include_frames", True))
+    include_turns = bool(opts.get("include_turns", True))
+    consent_in = opts.get("consent") or {}
+
+    name = f"jarvis-vl-{time.strftime('%Y%m%d-%H%M%S')}"
+    root = EXPORT_DIR / name
+    (root / "data").mkdir(parents=True, exist_ok=True)
+    (root / "meta").mkdir(parents=True, exist_ok=True)
+    frames_dir = root / "frames"
+    if include_frames:
+        frames_dir.mkdir(parents=True, exist_ok=True)
+
+    counts = {"vl_records": 0, "vqa_records": 0,
+              "frames_copied": 0, "frames_missing": 0}
+
+    # ---- observational vision-language stream (from visual_memory) ----------
+    if cutoff is not None:
+        q = ("SELECT id, ts, caption, objects, frame_file, phash, source "
+             "FROM visual_memory WHERE ts >= ? ORDER BY ts ASC LIMIT ?")
+        args = (cutoff, limit)
+    else:
+        q = ("SELECT id, ts, caption, objects, frame_file, phash, source "
+             "FROM visual_memory ORDER BY ts ASC LIMIT ?")
+        args = (limit,)
+    with MEMORY.lock:
+        vl_rows = MEMORY._con.execute(q, args).fetchall()
+
+    with (root / "data" / "vision_language.jsonl").open("w", encoding="utf-8") as f:
+        for idx, (_rid, ts, caption, objects, frame_file, phash, source) in enumerate(vl_rows):
+            frame_rel = None
+            if frame_file:
+                src = VMEM_DIR / frame_file
+                if src.exists():
+                    if include_frames:
+                        try:
+                            shutil.copy2(src, frames_dir / frame_file)
+                            counts["frames_copied"] += 1
+                        except OSError:
+                            counts["frames_missing"] += 1
+                    frame_rel = f"frames/{frame_file}"
+                else:
+                    counts["frames_missing"] += 1
+            rec = {
+                "index": idx,
+                "episode_index": idx,   # observational: each keyframe = 1-step episode
+                "frame_index": 0,
+                "timestamp": ts,
+                "observation.image": frame_rel,
+                "language.caption": caption or "",
+                "language.objects": _objects_to_list(objects),
+                "phash": phash,
+                "source": source or "ambient",
+                "action": None,         # no embodiment — see DATASET_CARD.md
+            }
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            counts["vl_records"] += 1
+
+    # ---- grounded visual-QA stream (from turns that have a frame) -----------
+    if include_turns:
+        with MEMORY.lock:
+            t_rows = MEMORY._con.execute(
+                "SELECT turn_id, kind, question, transcription, reply, created_at "
+                "FROM turns WHERE reply IS NOT NULL AND reply != '' "
+                "ORDER BY created_at ASC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        with (root / "data" / "visual_qa.jsonl").open("w", encoding="utf-8") as f:
+            for tid, kind, question, transcription, reply, cts in t_rows:
+                if cutoff is not None and (cts or 0) < cutoff:
+                    continue
+                src = SESSION_DIR / tid / "frame.jpg"
+                if not src.exists():
+                    continue  # grounded VQA needs the image it was asked about
+                fname = f"turn-{tid}.jpg"
+                frame_rel = f"frames/{fname}"
+                if include_frames:
+                    try:
+                        shutil.copy2(src, frames_dir / fname)
+                        counts["frames_copied"] += 1
+                    except OSError:
+                        counts["frames_missing"] += 1
+                        frame_rel = None
+                rec = {
+                    "turn_id": tid,
+                    "kind": kind,
+                    "timestamp": cts,
+                    "image": frame_rel,
+                    "question": (question or transcription or "").strip(),
+                    "answer": (reply or "").strip(),
+                }
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                counts["vqa_records"] += 1
+
+    # ---- consent / provenance (the market is rights-sensitive) --------------
+    consent = {
+        "collection_mode": consent_in.get("collection_mode", "stationary_camera"),
+        "location_label": consent_in.get("location_label", "unspecified"),
+        "operator": consent_in.get("operator", "unspecified"),
+        "capture_device": consent_in.get("capture_device", "Logitech C615 @ 512x384"),
+        "consent_obtained": bool(consent_in.get("consent_obtained", False)),
+        "license": consent_in.get("license", "unspecified — review before redistribution"),
+        "contains_pii": consent_in.get("contains_pii", "unknown — review frames before sharing"),
+        "notes": consent_in.get("notes", ""),
+    }
+    (root / "meta" / "consent.json").write_text(
+        json.dumps(consent, indent=2), encoding="utf-8")
+
+    # ---- machine-readable dataset info (LeRobot-ish) ------------------------
+    info = {
+        "codebase_version": DATASET_EXPORT_VERSION,
+        "exported_at": now,
+        "robot_type": "observation_only",
+        "fps": None,
+        "total_episodes": counts["vl_records"],
+        "total_frames": counts["vl_records"],
+        "total_vqa": counts["vqa_records"],
+        "features": {
+            "observation.image": {"dtype": "image", "shape": [VLM_H, VLM_W, 3],
+                                  "names": ["height", "width", "channel"]},
+            "language.caption": {"dtype": "string"},
+            "language.objects": {"dtype": "list[string]"},
+            "action": {"dtype": "null",
+                       "note": "no embodiment — observational data. Action "
+                               "labels require the Zip robot drive loop."},
+        },
+        "splits": {"train": f"0:{counts['vl_records']}"},
+        "counts": counts,
+        "consent": consent,
+    }
+    (root / "meta" / "info.json").write_text(
+        json.dumps(info, indent=2), encoding="utf-8")
+
+    (root / "DATASET_CARD.md").write_text(
+        _dataset_card(name, info, consent), encoding="utf-8")
+
+    total_bytes = sum(p.stat().st_size for p in root.rglob("*") if p.is_file())
+    return {"ok": True, "name": name, "path": str(root),
+            "counts": counts, "bytes": total_bytes,
+            "card_url": f"/dataset/card/{name}",
+            "download_url": f"/dataset/dl/{name}.zip"}
+
+
+def list_dataset_exports() -> list[dict]:
+    out = []
+    for d in sorted(EXPORT_DIR.glob("jarvis-vl-*"), reverse=True):
+        if not d.is_dir():
+            continue
+        info_p = d / "meta" / "info.json"
+        try:
+            info = json.loads(info_p.read_text()) if info_p.exists() else {}
+        except (json.JSONDecodeError, OSError):
+            info = {}
+        out.append({
+            "name": d.name,
+            "exported_at": info.get("exported_at"),
+            "counts": info.get("counts", {}),
+            "card_url": f"/dataset/card/{d.name}",
+            "download_url": f"/dataset/dl/{d.name}.zip",
+        })
+    return out
+
+
 # ----- HTML (loaded from disk for editability) --------------------------------
 HTML = (LAB / "scripts/jarvis_ui.html").read_text() if (LAB / "scripts/jarvis_ui.html").exists() else ""
 
@@ -2047,6 +2302,33 @@ class H(BaseHTTPRequestHandler):
                     if kv.startswith("q="):
                         q = unquote(kv[2:])
             self._send_json(200, {"items": MEMORY.vmem_search(q, 40), "q": q})
+        elif p == "/dataset/exports":
+            self._send_json(200, {"items": list_dataset_exports()})
+        elif p.startswith("/dataset/card/"):
+            name = p.split("?", 1)[0].split("/")[-1]
+            if "/" in name or ".." in name:
+                self.send_response(400); self.end_headers(); return
+            card = EXPORT_DIR / name / "DATASET_CARD.md"
+            if not card.exists():
+                self.send_response(404); self.end_headers(); return
+            self._send_bytes(card.read_bytes(), "text/markdown; charset=utf-8")
+        elif p.startswith("/dataset/dl/"):
+            # /dataset/dl/<name>.zip — zip the export dir on demand and stream it
+            name = p.split("?", 1)[0].split("/")[-1].replace(".zip", "")
+            if "/" in name or ".." in name:
+                self.send_response(400); self.end_headers(); return
+            src = EXPORT_DIR / name
+            if not src.is_dir():
+                self.send_response(404); self.end_headers(); return
+            try:
+                zpath = Path(shutil.make_archive(str(src), "zip",
+                                                 root_dir=str(EXPORT_DIR),
+                                                 base_dir=name))
+                self._send_bytes(zpath.read_bytes(), "application/zip",
+                                 {"Content-Disposition":
+                                  f'attachment; filename={name}.zip'})
+            except OSError as e:  # noqa: BLE001
+                self._send_json(500, {"error": str(e)})
         elif p == "/export/markdown":
             body = export_markdown().encode()
             self.send_response(200)
@@ -2278,6 +2560,17 @@ class H(BaseHTTPRequestHandler):
                 self._send_json(200, {"ok": True, "frame_url": rec["frame_url"],
                                       "fired": [{"id": r["id"], "text": r["text"]}
                                                 for r in fired]})
+            except Exception as e:  # noqa: BLE001
+                self._send_json(500, {"ok": False, "error": str(e)})
+        elif p == "/dataset/export":
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                opts = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "bad json"}); return
+            try:
+                self._send_json(200, export_dataset(opts))
             except Exception as e:  # noqa: BLE001
                 self._send_json(500, {"ok": False, "error": str(e)})
         elif p == "/memory/visual/capture":
