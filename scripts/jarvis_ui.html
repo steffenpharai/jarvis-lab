@@ -1084,6 +1084,18 @@ textarea#text::placeholder { color: var(--dim); }
 .ent-link span { font: 600 10px/1 'Geist Mono', monospace; color: var(--accent); }
 .ent-shots { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; }
 .ent-shots img { width: 100%; height: 50px; object-fit: cover; border-radius: var(--r-sm); cursor: zoom-in; border: 1px solid var(--border); }
+/* ===== link-chart overlay (force-directed entity graph) ===== */
+.graphview { position: fixed; inset: 0; z-index: 260; display: none;
+  background: radial-gradient(120% 120% at 50% 40%, rgba(16,18,22,0.92), rgba(8,8,10,0.97));
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
+.graphview.open { display: block; animation: msgIn 220ms ease-out; }
+.graph-head { position: absolute; top: 0; left: 0; right: 0; z-index: 2; display: flex; align-items: center; gap: 12px; padding: 14px 18px; }
+.graph-title { font: 600 12px/1 'Geist Mono', monospace; letter-spacing: .2em; color: var(--accent); }
+.graph-sub { font: 500 11px/1 'Geist Mono', monospace; color: var(--dim); }
+.graph-head .iconbtn { margin-left: auto; }
+.graph-hint { position: absolute; bottom: 14px; left: 0; right: 0; text-align: center; font: 500 10px/1 'Geist Mono', monospace; letter-spacing: .12em; text-transform: uppercase; color: var(--dim); pointer-events: none; }
+#graphcanvas { width: 100%; height: 100%; display: block; cursor: grab; }
+#graphcanvas:active { cursor: grabbing; }
 </style>
 
 <body>
@@ -1104,6 +1116,9 @@ textarea#text::placeholder { color: var(--dim); }
       </button>
       <button class=iconbtn id=clearbtn title='Clear current conversation' aria-label=clear>
         <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M3 6h18'/><path d='M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6'/><path d='M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2'/></svg>
+      </button>
+      <button class=iconbtn id=graphbtn title='Link chart — entity graph' aria-label='link chart'>
+        <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='5' cy='6' r='2'/><circle cx='19' cy='8' r='2'/><circle cx='12' cy='18' r='2'/><circle cx='6' cy='15' r='2'/><path d='M7 7l10 1M7.5 13.5 11 17M17.5 9.5 13 16'/></svg>
       </button>
       <button class=iconbtn id=intelbtn title='Intel panel (conversation, entities, watches)' aria-label='intel panel'>
         <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='3' y='3' width='18' height='18' rx='2'/><path d='M15 3v18'/><path d='M7 8h4M7 12h4'/></svg>
@@ -1340,6 +1355,18 @@ textarea#text::placeholder { color: var(--dim); }
 
 <div class=lightbox id=lightbox><img id=lightboximg src='' alt=''></div>
 
+<div class=graphview id=graphview>
+  <div class=graph-head>
+    <span class=graph-title>LINK CHART · ENTITY CO-OCCURRENCE</span>
+    <span class=graph-sub id=graph-sub></span>
+    <button class=iconbtn id=graphclose title=Close aria-label=close>
+      <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><path d='M18 6 6 18M6 6l12 12'/></svg>
+    </button>
+  </div>
+  <canvas id=graphcanvas></canvas>
+  <div class=graph-hint>drag to pan · click a node to inspect</div>
+</div>
+
 <div class=modal id=shortcuts-modal>
   <div class=modal-content>
     <h2>KEYBOARD &amp; COMMANDS</h2>
@@ -1482,6 +1509,59 @@ function entityListView() {
   $('#entity-detail').classList.add('hidden');
   $('#entities-list').classList.remove('hidden');
 }
+
+/* ===== link-chart: force-directed entity co-occurrence graph (eye candy) ===== */
+let _graphRAF = null;
+async function openGraph() {
+  const gv = $('#graphview'); gv.classList.add('open');
+  const cv = $('#graphcanvas'); const ctx = cv.getContext('2d');
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const resize = () => { cv.width = innerWidth * dpr; cv.height = innerHeight * dpr; };
+  resize(); window.addEventListener('resize', resize);
+  let data; try { data = await (await fetch('/memory/graph')).json(); } catch (e) { data = { nodes: [], edges: [] }; }
+  const cx = () => cv.width / 2, cy = () => cv.height / 2;
+  const nodes = data.nodes.map((n, i) => ({ ...n,
+    x: cx() + Math.cos(i / data.nodes.length * 6.283) * 230 * dpr,
+    y: cy() + Math.sin(i / data.nodes.length * 6.283) * 230 * dpr, vx: 0, vy: 0 }));
+  const byId = {}; nodes.forEach(n => byId[n.id] = n);
+  const edges = data.edges.filter(e => byId[e.a] && byId[e.b]);
+  $('#graph-sub').textContent = nodes.length + ' nodes · ' + edges.length + ' links';
+  const maxC = Math.max(1, ...nodes.map(n => n.count));
+  const maxW = Math.max(1, ...edges.map(e => e.w));
+  const radius = n => (9 + 20 * Math.sqrt(n.count / maxC)) * dpr;
+  let hover = null;
+  function step() {
+    for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) {
+      const a = nodes[i], b = nodes[j]; let dx = a.x - b.x, dy = a.y - b.y; const d2 = dx * dx + dy * dy + 1; const d = Math.sqrt(d2);
+      const f = (70000 * dpr * dpr) / d2; a.vx += dx / d * f; a.vy += dy / d * f; b.vx -= dx / d * f; b.vy -= dy / d * f;
+    }
+    for (const e of edges) { const a = byId[e.a], b = byId[e.b]; let dx = b.x - a.x, dy = b.y - a.y; const d = Math.sqrt(dx * dx + dy * dy) + 0.01;
+      const f = (d - 150 * dpr) * 0.006 * (0.5 + e.w / maxW); a.vx += dx / d * f; a.vy += dy / d * f; b.vx -= dx / d * f; b.vy -= dy / d * f; }
+    for (const n of nodes) { n.vx += (cx() - n.x) * 0.002; n.vy += (cy() - n.y) * 0.002; n.vx *= 0.85; n.vy *= 0.85; n.x += n.vx; n.y += n.vy; }
+  }
+  function draw() {
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    for (const e of edges) { const a = byId[e.a], b = byId[e.b]; const hot = hover && (a === hover || b === hover);
+      ctx.strokeStyle = hot ? 'rgba(56,189,248,' + (0.4 + 0.5 * e.w / maxW) + ')' : 'rgba(193,95,60,' + (0.07 + 0.45 * e.w / maxW) + ')';
+      ctx.lineWidth = (0.4 + 1.6 * e.w / maxW) * dpr; ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); }
+    for (const n of nodes) { const r = radius(n); const isH = hover === n; const col = isH ? '56,189,248' : '193,95,60';
+      const g = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, r * 2.3);
+      g.addColorStop(0, 'rgba(' + col + ',0.9)'); g.addColorStop(0.45, 'rgba(' + col + ',0.32)'); g.addColorStop(1, 'rgba(' + col + ',0)');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(n.x, n.y, r * 2.3, 0, 6.283); ctx.fill();
+      ctx.fillStyle = isH ? '#cdeeff' : '#f3ddd2'; ctx.beginPath(); ctx.arc(n.x, n.y, r * 0.5, 0, 6.283); ctx.fill();
+      ctx.fillStyle = 'rgba(230,231,234,' + (isH ? 1 : 0.82) + ')'; ctx.font = '600 ' + (12 * dpr) + "px 'Geist Mono', monospace"; ctx.textAlign = 'center';
+      ctx.fillText(n.id, n.x, n.y + r + 15 * dpr); }
+  }
+  function loop() { step(); draw(); _graphRAF = requestAnimationFrame(loop); }
+  const toCanvas = ev => ({ x: ev.clientX * dpr, y: ev.clientY * dpr });
+  cv.onmousemove = ev => { const p = toCanvas(ev); hover = null; for (const n of nodes) if (Math.hypot(n.x - p.x, n.y - p.y) < radius(n) + 8 * dpr) { hover = n; break; } cv.style.cursor = hover ? 'pointer' : 'default'; };
+  cv.onclick = ev => { const p = toCanvas(ev); for (const n of nodes) if (Math.hypot(n.x - p.x, n.y - p.y) < radius(n) + 8 * dpr) { closeGraph(); openIntel('entities'); showEntityDetail(n.id); return; } };
+  loop();
+}
+function closeGraph() { $('#graphview').classList.remove('open'); if (_graphRAF) cancelAnimationFrame(_graphRAF); _graphRAF = null; }
+$('#graphbtn') && ($('#graphbtn').onclick = openGraph);
+$('#graphclose') && ($('#graphclose').onclick = closeGraph);
+window.addEventListener('keydown', e => { if (e.key === 'Escape' && $('#graphview').classList.contains('open')) closeGraph(); });
 async function showEntityDetail(label) {
   const det = $('#entity-detail');
   $('#entities-list').classList.add('hidden');

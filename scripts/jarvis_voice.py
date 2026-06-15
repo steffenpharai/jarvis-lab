@@ -437,6 +437,34 @@ class Memory:
                         e["frame_url"] = furl
         return sorted(agg.values(), key=lambda e: e["last_ts"], reverse=True)
 
+    def vmem_graph(self, scan_rows: int = 300, top_n: int = 30,
+                   min_edge: int = 2) -> dict:
+        """Co-occurrence link graph: nodes = top entities, edges = how often two
+        entities appeared in the same keyframe. Powers the Palantir link-chart."""
+        with self.lock:
+            rows = self._con.execute(
+                "SELECT objects FROM visual_memory WHERE objects != '' "
+                "ORDER BY ts DESC LIMIT ?", (scan_rows,),
+            ).fetchall()
+        node_count: dict[str, int] = {}
+        edge_w: dict[tuple, int] = {}
+        for (objs,) in rows:
+            labs = sorted({re.sub(r"[^a-z0-9 ]", "", o.strip().lower()).strip()
+                           for o in (objs or "").split(",")})
+            labs = [l for l in labs if len(l) >= 2]
+            for l in labs:
+                node_count[l] = node_count.get(l, 0) + 1
+            for i in range(len(labs)):
+                for j in range(i + 1, len(labs)):
+                    k = (labs[i], labs[j])
+                    edge_w[k] = edge_w.get(k, 0) + 1
+        top = {l for l, _ in sorted(node_count.items(),
+                                    key=lambda x: -x[1])[:top_n]}
+        nodes = [{"id": l, "count": node_count[l]} for l in top]
+        edges = [{"a": a, "b": b, "w": w} for (a, b), w in edge_w.items()
+                 if a in top and b in top and w >= min_edge]
+        return {"nodes": nodes, "edges": edges}
+
     def entity_detail(self, label: str, scan_rows: int = 400) -> dict:
         """Object-centric dossier for one entity: sightings over time + the
         entities it co-occurs with (the Palantir 'links' between objects)."""
@@ -1990,6 +2018,8 @@ class H(BaseHTTPRequestHandler):
             self._send_json(200, {"items": MEMORY.search(q, 50), "q": q})
         elif p == "/memory/pinned":
             self._send_json(200, {"items": MEMORY.pinned()})
+        elif p == "/memory/graph":
+            self._send_json(200, MEMORY.vmem_graph())
         elif p.startswith("/memory/entity?"):
             from urllib.parse import unquote
             label = ""
