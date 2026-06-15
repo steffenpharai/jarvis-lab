@@ -947,6 +947,13 @@ textarea#text::placeholder { color: var(--dim); }
   opacity: 0; transition: opacity .3s var(--ease-out); max-height: 32vh; overflow: hidden;
 }
 .sayjarvis.show { opacity: 1; }
+.talkhint {
+  position: fixed; left: 50%; transform: translateX(-50%); top: 57%;
+  font: 500 11px/1 'Geist Mono', monospace; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--dim); z-index: 9; pointer-events: none; text-shadow: 0 1px 4px #000;
+  opacity: 0; transition: opacity .5s var(--ease-out); white-space: nowrap;
+}
+.talkhint.show { opacity: 0.66; }
 .live-caption { bottom: calc(var(--dock-h, 150px) + 44px) !important; left: 50% !important; right: auto !important;
   transform: translateX(-50%); width: min(760px, 88vw); }
 
@@ -1041,6 +1048,7 @@ textarea#text::placeholder { color: var(--dim); }
         <div class=sayuser id=sayuser></div>
         <div class=sayjarvis id=sayjarvis></div>
       </div>
+      <div class=talkhint id=talkhint>Tap the orb to talk &middot; or say &ldquo;Hey&nbsp;Jarvis&rdquo;</div>
     </div>
 
     <aside class=intel id=intel aria-hidden=true>
@@ -1365,6 +1373,15 @@ function setAmbient(state) {
   _lastAmbient = state || 'idle';
   ambientEl.className = 'ambient on ' + (state || 'idle');
   window.jarvisVoice.state = state || 'idle';
+  refreshHint();
+}
+// idle "tap to talk" hint — visible only when idle and no caption is showing
+function refreshHint() {
+  const hint = document.getElementById('talkhint'); if (!hint) return;
+  const sj = document.getElementById('sayjarvis');
+  const idle = !window.jarvisVoice || window.jarvisVoice.state === 'idle';
+  const sayShown = sj && sj.classList.contains('show');
+  hint.classList.toggle('show', idle && !sayShown && !isStreaming);
 }
 let _lastAmbient = 'idle';
 const _LABEL_AMBIENT = {
@@ -1992,6 +2009,7 @@ function setComposerBusy(b) {
   composerfoot.classList.toggle('busy', b);
   sendbtn.disabled = b;
   orb.classList.toggle('busy', b);
+  if (typeof refreshHint === 'function') refreshHint();
 }
 
 /* ===== composer ===== */
@@ -2049,14 +2067,14 @@ let _sayTimer = null;
 function sayShow(user, reply) {
   if (sayUserEl) { sayUserEl.textContent = user || ''; sayUserEl.classList.toggle('show', !!user); }
   if (sayJarvisEl) { sayJarvisEl.textContent = reply || ''; sayJarvisEl.classList.toggle('show', !!reply); }
-  clearTimeout(_sayTimer);
+  clearTimeout(_sayTimer); refreshHint();
 }
 function sayReply(text) {
   if (!sayJarvisEl) return;
-  sayJarvisEl.textContent = text; sayJarvisEl.classList.add('show');
+  sayJarvisEl.textContent = text; sayJarvisEl.classList.add('show'); refreshHint();
   clearTimeout(_sayTimer);
   // fade the caption a while after the reply settles (keeps the stage clean)
-  _sayTimer = setTimeout(() => { sayJarvisEl.classList.remove('show'); if (sayUserEl) sayUserEl.classList.remove('show'); }, 14000);
+  _sayTimer = setTimeout(() => { sayJarvisEl.classList.remove('show'); if (sayUserEl) sayUserEl.classList.remove('show'); refreshHint(); }, 14000);
 }
 // the big central orb is the primary "talk to Jarvis" target
 const talkbtn = $('#talkbtn');
