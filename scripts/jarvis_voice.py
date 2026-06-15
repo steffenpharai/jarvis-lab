@@ -1025,7 +1025,8 @@ def stream_vlm(question: str, frame_jpg: Path,
                cancel: threading.Event, on_token,
                include_history: bool = True,
                connect_timeout_s: float = 5.0,
-               read_timeout_s: float = 20.0) -> tuple[str, dict]:
+               read_timeout_s: float = 20.0,
+               priority: bool = True) -> tuple[str, dict]:
     b64 = base64.b64encode(frame_jpg.read_bytes()).decode()
     with SETTINGS_LOCK:
         sysp = SETTINGS["system_prompt"]
@@ -1057,6 +1058,9 @@ def stream_vlm(question: str, frame_jpg: Path,
         write=connect_timeout_s, pool=connect_timeout_s,
     )
     deadline_at = time.monotonic() + max(read_timeout_s * 4, 45.0)
+    # serialize GPU inference; background callers skip when busy (priority=False)
+    if not jarvis_tools.VLM_BUSY.acquire(blocking=priority):
+        return "", {"skipped": True}
     try:
         with httpx.stream(
             "POST", VLM_URL, json=body, timeout=timeout,
@@ -1091,8 +1095,10 @@ def stream_vlm(question: str, frame_jpg: Path,
                 full.append(delta)
                 on_token(delta)
     except (httpx.TimeoutException, httpx.RemoteProtocolError,
-            httpx.NetworkError):
+            httpx.NetworkError, httpx.HTTPStatusError):
         stalled = True
+    finally:
+        jarvis_tools.VLM_BUSY.release()
     if stalled:
         usage["stalled"] = True
     return "".join(full).strip(), usage
@@ -1443,8 +1449,11 @@ class LiveMode:
                         "nothing has notably changed, say what is most salient.",
                         work / "frame.jpg", cancel, lambda d: None,
                         include_history=False, read_timeout_s=15.0,
+                        priority=False,
                     )
-                    if meta.get("stalled") and not reply:
+                    if meta.get("skipped"):
+                        pass  # VLM busy with interactive work; skip this tick
+                    elif meta.get("stalled") and not reply:
                         self._broadcast({"event": "error",
                                          "error": "VLM stalled, skipping",
                                          "ts": time.time()})
@@ -1518,8 +1527,9 @@ class VisualMemory:
     def set_enabled(self, on: bool) -> None:
         self.enabled = bool(on)
 
-    def capture_now(self, source: str = "manual") -> dict:
-        """Force-capture a keyframe into visual memory. Returns the record."""
+    def capture_now(self, source: str = "manual", priority: bool = True) -> dict | None:
+        """Force-capture a keyframe into visual memory. Returns the record, or
+        None if the VLM was busy (background, priority=False) and skipped."""
         raw = CAMERA.get_latest()
         ph = phash_frame(raw)
         fname = uuid.uuid4().hex + ".jpg"
@@ -1535,7 +1545,9 @@ class VisualMemory:
         cancel = threading.Event()
         text, _u = stream_vlm(_VMEM_CAPTION_PROMPT, fpath, cancel,
                               lambda d: None, include_history=False,
-                              read_timeout_s=20.0)
+                              read_timeout_s=20.0, priority=priority)
+        if _u.get("skipped"):
+            return None  # VLM busy with interactive work; skip this cycle
         scene, objects = _parse_caption(text)
         rid = MEMORY.vmem_record(time.time(), scene, objects, fname, ph, source)
         self.last_phash = ph
@@ -1559,11 +1571,12 @@ class VisualMemory:
                     changed = (self.last_phash is None
                                or hamming(ph, self.last_phash) > PHASH_LIVE_GATE)
                     if changed:
-                        rec = self.capture_now(source="ambient")
-                        try:
-                            WATCHER.evaluate(Path(rec["frame_path"]))
-                        except Exception as wexc:
-                            print(f"[watch] {wexc}", flush=True)
+                        rec = self.capture_now(source="ambient", priority=False)
+                        if rec:  # None when the VLM was busy and we skipped
+                            try:
+                                WATCHER.evaluate(Path(rec["frame_path"]))
+                            except Exception as wexc:
+                                print(f"[watch] {wexc}", flush=True)
             except Exception as exc:
                 print(f"[vmem] {exc}", flush=True)
             if self._stop.wait(self.interval_s):
@@ -1598,7 +1611,10 @@ class Watcher:
         )
         cancel = threading.Event()
         text, _u = stream_vlm(prompt, frame_path, cancel, lambda d: None,
-                              include_history=False, read_timeout_s=20.0)
+                              include_history=False, read_timeout_s=20.0,
+                              priority=False)
+        if _u.get("skipped"):
+            return []  # VLM busy; re-evaluate next cycle
         fired = []
         for i, r in enumerate(due):
             m = re.search(rf"{i+1}\s*[:\-]\s*(yes|no)", text or "", re.I)

@@ -412,6 +412,12 @@ HTTP = httpx.Client(
     follow_redirects=True,
 )
 
+# Serializes all VLM image inference. On the 8GB Orin, concurrent mmproj image
+# calls (e.g. an interactive investigate while the ambient captioner fires) spike
+# memory and SIGSEGV the server. Interactive callers block on this; background
+# callers (captioner/watcher) try-acquire and skip when busy.
+VLM_BUSY = threading.Lock()
+
 
 def _tmp_jpg(ctx: ToolContext, tag: str) -> Path:
     base = ctx.session_dir / "tools"
@@ -598,10 +604,11 @@ def _multi_image_vlm(ctx: ToolContext, prompt: str, frames: list[Path],
         "max_tokens": max_t,
         "temperature": temp,
     }
-    r = httpx.post(
-        "http://127.0.0.1:8080/v1/chat/completions",
-        json=body, timeout=httpx.Timeout(max_seconds, connect=5.0),
-    )
+    with VLM_BUSY:
+        r = httpx.post(
+            "http://127.0.0.1:8080/v1/chat/completions",
+            json=body, timeout=httpx.Timeout(max_seconds, connect=5.0),
+        )
     r.raise_for_status()
     j = r.json()
     return j["choices"][0]["message"]["content"].strip()
@@ -3079,7 +3086,11 @@ def run_investigate(ctx: ToolContext, *, subject: str = "", point=None,
              or _clean_query(ident.get("search", ""))
              or _clean_query(subject))
     out["query"] = query
-    if web and query:
+    # Don't web-search a non-identification (e.g. VLM hiccup -> "unknown"),
+    # which would return junk results for the literal word.
+    _JUNK_Q = {"", "unknown", "none", "n/a", "nothing", "object", "thing",
+               "unclear", "unidentified", "it"}
+    if web and query and query.lower() not in _JUNK_Q:
         emit({"phase": "researching", "query": query})
         wiki = _wiki_summary(query)
         try:
@@ -3612,10 +3623,11 @@ def _agent_chat(messages: list[dict], *, max_tokens: int, temperature: float,
         "max_tokens": max_tokens,
         "temperature": temperature,
     }
-    r = httpx.post(
-        "http://127.0.0.1:8080/v1/chat/completions",
-        json=body, timeout=httpx.Timeout(timeout_s, connect=5.0),
-    )
+    with VLM_BUSY:
+        r = httpx.post(
+            "http://127.0.0.1:8080/v1/chat/completions",
+            json=body, timeout=httpx.Timeout(timeout_s, connect=5.0),
+        )
     r.raise_for_status()
     j = r.json()
     text = j["choices"][0]["message"]["content"].strip()
