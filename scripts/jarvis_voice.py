@@ -2058,9 +2058,10 @@ class H(BaseHTTPRequestHandler):
             self.wfile.write(body)
         elif p == "/stream.mjpeg":
             self._stream_mjpeg()
-        elif p == "/snapshot.jpg":
+        elif p.split("?")[0] == "/snapshot.jpg":
             try:
-                self._send_bytes(CAMERA.get_latest(), "image/jpeg")
+                self._send_bytes(CAMERA.get_latest(), "image/jpeg",
+                                 {"Cache-Control": "no-store"})
             except TimeoutError:
                 self.send_response(503); self.end_headers()
         elif p == "/audio_meter":

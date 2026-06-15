@@ -1182,6 +1182,9 @@ textarea#text::placeholder { color: var(--dim); }
       <button class=iconbtn id=graphbtn title='Link chart — entity graph' aria-label='link chart'>
         <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='5' cy='6' r='2'/><circle cx='19' cy='8' r='2'/><circle cx='12' cy='18' r='2'/><circle cx='6' cy='15' r='2'/><path d='M7 7l10 1M7.5 13.5 11 17M17.5 9.5 13 16'/></svg>
       </button>
+      <button class=iconbtn id=cloudbtn title='3D point-cloud scan of the scene' aria-label='point cloud'>
+        <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 2 2 7l10 5 10-5-10-5z'/><path d='M2 17l10 5 10-5M2 12l10 5 10-5'/></svg>
+      </button>
       <button class=iconbtn id=intelbtn title='Intel panel (conversation, entities, watches)' aria-label='intel panel'>
         <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='3' y='3' width='18' height='18' rx='2'/><path d='M15 3v18'/><path d='M7 8h4M7 12h4'/></svg>
       </button>
@@ -1433,6 +1436,18 @@ textarea#text::placeholder { color: var(--dim); }
     </div>
     <div class=spot-results id=spot-results><div class=spot-hint>Type to search across everything Jarvis knows.</div></div>
   </div>
+</div>
+
+<div class=graphview id=pointcloud>
+  <div class=graph-head>
+    <span class=graph-title>3D SCENE SCAN · POINT CLOUD</span>
+    <span class=graph-sub id=cloud-sub></span>
+    <button class=iconbtn id=cloudclose title=Close aria-label=close>
+      <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><path d='M18 6 6 18M6 6l12 12'/></svg>
+    </button>
+  </div>
+  <canvas id=cloudcanvas></canvas>
+  <div class=graph-hint>drag to orbit · scroll to zoom · live depth-from-luminance</div>
 </div>
 
 <div class=graphview id=graphview>
@@ -1697,7 +1712,13 @@ window.addEventListener('keydown', e => {
 });
 $('#graphbtn') && ($('#graphbtn').onclick = openGraph);
 $('#graphclose') && ($('#graphclose').onclick = closeGraph);
-window.addEventListener('keydown', e => { if (e.key === 'Escape' && $('#graphview').classList.contains('open')) closeGraph(); });
+$('#cloudbtn') && ($('#cloudbtn').onclick = () => window.openPointCloud && window.openPointCloud());
+$('#cloudclose') && ($('#cloudclose').onclick = () => window.closePointCloud && window.closePointCloud());
+window.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  if ($('#graphview').classList.contains('open')) closeGraph();
+  if ($('#pointcloud').classList.contains('open') && window.closePointCloud) window.closePointCloud();
+});
 async function showEntityDetail(label) {
   const det = $('#entity-detail');
   $('#entities-list').classList.add('hidden');
@@ -3439,6 +3460,60 @@ try {
   console.warn('[orb] WebGL presence orb disabled:', e.message);
   const c = document.getElementById('presence'); if (c) c.style.display = 'none';
   window.__orbReady = false;
+}
+</script>
+<!-- ===== 3D point-cloud scan (depth-from-luminance, viewer-GPU) ===== -->
+<script type="module">
+try {
+  const THREE = await import('three');
+  const cv = document.getElementById('cloudcanvas');
+  const renderer = new THREE.WebGLRenderer({ canvas: cv, antialias: true });
+  renderer.setClearColor(0x060607, 1);
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const scene = new THREE.Scene();
+  const cam = new THREE.PerspectiveCamera(55, 1, 0.01, 100);
+  let points = null, raf = null, rotX = 0.25, rotY = 0, dist = 1.7, dragging = false, lx = 0, ly = 0;
+  const el = () => document.getElementById('pointcloud');
+  function size() { const w = innerWidth, h = innerHeight; renderer.setPixelRatio(dpr); renderer.setSize(w, h, false); cam.aspect = w / h; cam.updateProjectionMatrix(); }
+  async function build() {
+    const img = new Image();
+    await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = '/snapshot.jpg?t=' + Date.now(); });
+    const SW = 168, SH = Math.max(1, Math.round(SW * img.height / img.width));
+    const c = document.createElement('canvas'); c.width = SW; c.height = SH;
+    const cx = c.getContext('2d'); cx.drawImage(img, 0, 0, SW, SH);
+    const d = cx.getImageData(0, 0, SW, SH).data;
+    const pos = [], col = [], aspect = SW / SH;
+    for (let y = 0; y < SH; y++) for (let x = 0; x < SW; x++) {
+      const i = (y * SW + x) * 4, r = d[i] / 255, g = d[i + 1] / 255, b = d[i + 2] / 255;
+      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+      pos.push((x / SW - 0.5) * aspect, -(y / SH - 0.5), (lum - 0.5) * 0.7);
+      col.push(r, g, b);
+    }
+    if (points) { scene.remove(points); points.geometry.dispose(); points.material.dispose(); }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    points = new THREE.Points(geo, new THREE.PointsMaterial({ size: 0.006, vertexColors: true, sizeAttenuation: true }));
+    scene.add(points);
+    document.getElementById('cloud-sub').textContent = (SW * SH).toLocaleString() + ' points';
+  }
+  function loop() {
+    raf = requestAnimationFrame(loop);
+    if (!dragging) rotY += 0.0025;
+    cam.position.set(Math.sin(rotY) * Math.cos(rotX) * dist, Math.sin(rotX) * dist, Math.cos(rotY) * Math.cos(rotX) * dist);
+    cam.lookAt(0, 0, 0); renderer.render(scene, cam);
+  }
+  cv.addEventListener('mousedown', e => { dragging = true; lx = e.clientX; ly = e.clientY; });
+  window.addEventListener('mouseup', () => dragging = false);
+  window.addEventListener('mousemove', e => { if (!dragging) return; rotY += (e.clientX - lx) * 0.005; rotX = Math.max(-1.4, Math.min(1.4, rotX + (e.clientY - ly) * 0.005)); lx = e.clientX; ly = e.clientY; });
+  cv.addEventListener('wheel', e => { e.preventDefault(); dist = Math.max(0.6, Math.min(4.5, dist + e.deltaY * 0.001)); }, { passive: false });
+  window.addEventListener('resize', () => { if (el().classList.contains('open')) size(); });
+  window.openPointCloud = async () => { el().classList.add('open'); size(); try { await build(); } catch (e) {} if (!raf) loop(); };
+  window.closePointCloud = () => { el().classList.remove('open'); if (raf) cancelAnimationFrame(raf); raf = null; };
+} catch (e) {
+  console.warn('[cloud] WebGL point cloud disabled:', e.message);
+  window.openPointCloud = () => (window.toast ? toast('3D point cloud needs WebGL', 'warn') : 0);
+  window.closePointCloud = () => {};
 }
 </script>
 </body>
