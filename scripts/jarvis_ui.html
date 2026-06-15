@@ -95,6 +95,31 @@
 }
 /* keep feed chrome above the FX texture overlay */
 .hud-pill, .live-toggle, .wake-pill { z-index: 5; }
+/* ===== SYSTEMS rail — always-on operational console (Palantir/Lattice) ===== */
+.sysrail {
+  position: fixed; left: 12px; top: 50px; bottom: calc(var(--dock-h, 150px) + 28px);
+  width: 168px; z-index: 33; display: flex; flex-direction: column; gap: 12px;
+  padding: 12px 12px 10px; overflow-y: auto;
+  background: var(--glass-fill); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--border-strong); border-top-color: var(--glass-edge); border-radius: var(--r-lg);
+  box-shadow: 0 24px 70px -24px rgba(0,0,0,0.7);
+}
+.sysrail::-webkit-scrollbar { width: 0; }
+.sys-grp { display: flex; flex-direction: column; gap: 3px; }
+.sys-h { font: 600 9px/1 'Geist Mono', monospace; letter-spacing: .2em; color: var(--dim); margin-bottom: 4px; }
+.sys-row { display: flex; align-items: center; gap: 7px; font: 500 11px/1.6 'Geist Mono', monospace; }
+.sys-row .sd { width: 6px; height: 6px; border-radius: 50%; background: var(--dim); flex-shrink: 0; box-shadow: none; }
+.sys-row.ok .sd { background: var(--ok); box-shadow: 0 0 7px rgba(74,222,128,0.6); }
+.sys-row.live .sd { background: var(--cyan); box-shadow: 0 0 8px rgba(56,189,248,0.7); animation: pulse 1.5s ease-in-out infinite; }
+.sys-row.warn .sd { background: var(--warn); box-shadow: 0 0 7px rgba(245,158,11,0.6); }
+.sys-row.bad .sd { background: var(--bad); box-shadow: 0 0 7px rgba(239,68,68,0.6); }
+.sys-row .sl { color: var(--muted); letter-spacing: .08em; }
+.sys-row .sv { margin-left: auto; color: var(--text); font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
+.sys-row.off .sv, .sys-row.off .sl { color: var(--dim); }
+.sys-row.warn .sv { color: var(--warn); }
+.sys-row.bad .sv { color: var(--bad); }
+@media (max-width: 900px) { .sysrail { display: none; } }
+
 /* always-on targeting frame — corner brackets read instantly as "HUD" */
 .hudframe { position: absolute; inset: 14px; z-index: 2; pointer-events: none; }
 .hudframe .hc { position: absolute; width: 26px; height: 26px; opacity: 0.5;
@@ -1051,6 +1076,35 @@ textarea#text::placeholder { color: var(--dim); }
       <div class=talkhint id=talkhint>Tap the orb to talk &middot; or say &ldquo;Hey&nbsp;Jarvis&rdquo;</div>
     </div>
 
+    <!-- ===== SYSTEMS rail — always-on operational transparency ===== -->
+    <aside class=sysrail id=sysrail>
+      <div class=sys-grp>
+        <div class=sys-h>SYSTEMS</div>
+        <div class=sys-row id=sys-vlm><span class=sd></span><span class=sl>VLM</span><span class=sv>—</span></div>
+        <div class=sys-row id=sys-cam><span class=sd></span><span class=sl>CAM</span><span class=sv>—</span></div>
+        <div class=sys-row id=sys-mic><span class=sd></span><span class=sl>STT</span><span class=sv>—</span></div>
+        <div class=sys-row id=sys-tts><span class=sd></span><span class=sl>TTS</span><span class=sv>—</span></div>
+        <div class=sys-row id=sys-owl><span class=sd></span><span class=sl>DETECT</span><span class=sv>—</span></div>
+        <div class=sys-row id=sys-wake><span class=sd></span><span class=sl>WAKE</span><span class=sv>—</span></div>
+        <div class=sys-row id=sys-agent><span class=sd></span><span class=sl>AGENT</span><span class=sv>—</span></div>
+        <div class=sys-row id=sys-live><span class=sd></span><span class=sl>LIVE</span><span class=sv>—</span></div>
+      </div>
+      <div class=sys-grp>
+        <div class=sys-h>RESOURCES</div>
+        <div class=sys-row id=sys-ram><span class=sl>RAM</span><span class=sv>—</span></div>
+        <div class=sys-row id=sys-soc><span class=sl>SoC</span><span class=sv>—</span></div>
+        <div class=sys-row id=sys-fps><span class=sl>FPS</span><span class=sv>—</span></div>
+        <div class=sys-row id=sys-up><span class=sl>UP</span><span class=sv>—</span></div>
+      </div>
+      <div class=sys-grp>
+        <div class=sys-h>KNOWLEDGE</div>
+        <div class=sys-row id=sys-tools><span class=sl>TOOLS</span><span class=sv>—</span></div>
+        <div class=sys-row id=sys-ent><span class=sl>SEEN</span><span class=sv>—</span></div>
+        <div class=sys-row id=sys-watch><span class=sl>WATCH</span><span class=sv>—</span></div>
+        <div class=sys-row id=sys-mem><span class=sl>MEM</span><span class=sv>—</span></div>
+      </div>
+    </aside>
+
     <aside class=intel id=intel aria-hidden=true>
     <div class=intel-head>
       <span class=intel-title>INTEL</span>
@@ -1311,6 +1365,37 @@ function switchPane(name) {
   if (name === 'seen') loadSeen();
 }
 
+/* ===== SYSTEMS rail (operational transparency) ===== */
+function setSys(id, state, value) {
+  const el = document.getElementById(id); if (!el) return;
+  el.className = 'sys-row ' + (state || '');
+  const v = el.querySelector('.sv'); if (v && value != null) v.textContent = value;
+}
+function fmtUp(s) {
+  if (s < 60) return s + 's';
+  if (s < 3600) return Math.floor(s / 60) + 'm';
+  if (s < 86400) return Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm';
+  return Math.floor(s / 86400) + 'd ' + Math.floor((s % 86400) / 3600) + 'h';
+}
+function updateSysRail(m) {
+  setSys('sys-vlm', m.vlm_up ? 'ok' : 'bad', m.vlm_up ? 'online' : 'down');
+  setSys('sys-cam', m.cam_fps > 1 ? 'ok' : 'warn', m.cam_fps ? Math.round(m.cam_fps) + 'fps' : '—');
+  setSys('sys-mic', m.whisper_ok ? 'ok' : 'off', m.whisper_ok ? 'ready' : '—');
+  setSys('sys-tts', m.piper_ok ? 'ok' : 'off', m.piper_ok ? 'ready' : '—');
+  setSys('sys-owl', m.owl_up ? 'ok' : 'off', m.owl_up ? 'online' : 'offline');
+  setSys('sys-wake', m.wake_enabled ? 'live' : 'off', m.wake_enabled ? (m.wake_score ? m.wake_score.toFixed(2) : 'on') : 'off');
+  setSys('sys-agent', m.agent_mode_enabled ? 'ok' : 'off', m.agent_mode_enabled ? 'on' : 'off');
+  setSys('sys-live', m.live_running ? 'live' : 'off', m.live_running ? 'on' : 'off');
+  setSys('sys-ram', m.ram_avail_mb < 400 ? 'bad' : (m.ram_avail_mb < 800 ? 'warn' : 'ok'), m.ram_avail_mb + 'M');
+  setSys('sys-soc', m.soc_temp_c > 80 ? 'bad' : (m.soc_temp_c > 65 ? 'warn' : 'ok'), Math.round(m.soc_temp_c) + '°');
+  setSys('sys-fps', m.cam_fps > 1 ? 'ok' : 'warn', m.cam_fps.toFixed(1));
+  setSys('sys-up', 'ok', fmtUp(m.uptime_s || 0));
+  setSys('sys-tools', 'ok', m.tool_count);
+  setSys('sys-ent', 'ok', m.vmem_count);
+  setSys('sys-watch', m.watch_count > 0 ? 'live' : 'off', m.watch_count);
+  setSys('sys-mem', 'ok', m.memory_count);
+}
+
 /* ===== metrics tick ===== */
 async function tickMetrics() {
   try {
@@ -1329,6 +1414,7 @@ async function tickMetrics() {
     liveCount.textContent = m.live_observations;
     memCount.textContent = m.memory_count;
     const sc = $('#seen-count'); if (sc) sc.textContent = m.vmem_count || 0;
+    updateSysRail(m);
     const tele = $('#teleHint');
     if (tele) tele.innerHTML =
       'RAM ' + m.ram_avail_mb + ' / ' + m.ram_total_mb + ' MB<br>' +

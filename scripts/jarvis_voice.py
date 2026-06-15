@@ -86,6 +86,7 @@ _STOPWORDS = {
 # Updated whenever the user actively uses the VLM, so the ambient visual-memory
 # captioner can yield the GPU to interactive turns.
 LAST_USER_ACTIVITY = {"ts": 0.0}
+_BOOT_TS = time.time()
 
 
 # ----- prompt presets ---------------------------------------------------------
@@ -1715,6 +1716,9 @@ def gather_metrics() -> dict:
         "tool_count": len(jarvis_tools.TOOLS.catalog()),
         "vmem_count": MEMORY.vmem_count(),
         "vmem_enabled": VMEM.enabled,
+        "owl_up": jarvis_tools._owl_available(),
+        "watch_count": len(MEMORY.watch_list(only_active=True)),
+        "uptime_s": round(time.time() - _BOOT_TS),
     }
 
 
