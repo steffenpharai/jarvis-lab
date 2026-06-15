@@ -1036,6 +1036,25 @@ textarea#text::placeholder { color: var(--dim); }
   opacity: 0; transition: opacity .5s var(--ease-out); white-space: nowrap;
 }
 .talkhint.show { opacity: 0.66; }
+/* ===== timeline scrubber (Lattice time-dynamic COP) ===== */
+.timeline { position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: calc(var(--dock-h, 150px) + 44px); width: min(560px, 92vw); z-index: 37; display: none;
+  background: var(--glass-fill); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--border-strong); border-top-color: var(--glass-edge); border-radius: var(--r-lg);
+  box-shadow: 0 24px 70px -24px rgba(0,0,0,0.75); padding: 10px 12px 12px; }
+.timeline.open { display: block; animation: msgIn 180ms ease-out; }
+.tl-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.tl-title { font: 600 10px/1 'Geist Mono', monospace; letter-spacing: .18em; color: var(--accent); }
+.tl-time { font: 600 11px/1 'Geist Mono', monospace; color: var(--muted); margin-left: 2px; }
+.tl-play, .tl-x { margin-left: auto; background: transparent; border: 1px solid var(--border); color: var(--muted); width: 26px; height: 26px; border-radius: var(--r-sm); cursor: pointer; font-size: 12px; }
+.tl-x { margin-left: 0; }
+.tl-play:hover, .tl-x:hover { color: var(--text); border-color: var(--accent-soft); }
+.tl-play.on { color: var(--accent); border-color: var(--accent-soft); }
+.tl-preview { position: relative; border-radius: var(--r-md); overflow: hidden; background: #000; border: 1px solid var(--border); }
+.tl-preview img { width: 100%; max-height: 230px; object-fit: contain; display: block; }
+.tl-cap { position: absolute; left: 0; right: 0; bottom: 0; padding: 8px 10px; font-size: 12px; color: var(--text);
+  background: linear-gradient(0deg, rgba(8,8,10,0.92), transparent); text-shadow: 0 1px 3px #000; }
+.tl-slider { width: 100%; margin-top: 10px; accent-color: var(--accent); cursor: pointer; }
 .live-caption { bottom: calc(var(--dock-h, 150px) + 44px) !important; left: 50% !important; right: auto !important;
   transform: translateX(-50%); width: min(760px, 88vw); }
 
@@ -1182,6 +1201,9 @@ textarea#text::placeholder { color: var(--dim); }
       <button class=iconbtn id=graphbtn title='Link chart — entity graph' aria-label='link chart'>
         <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='5' cy='6' r='2'/><circle cx='19' cy='8' r='2'/><circle cx='12' cy='18' r='2'/><circle cx='6' cy='15' r='2'/><path d='M7 7l10 1M7.5 13.5 11 17M17.5 9.5 13 16'/></svg>
       </button>
+      <button class=iconbtn id=timelinebtn title='Timeline — scrub what Jarvis has seen' aria-label='timeline'>
+        <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='9'/><path d='M12 7v5l3 2'/></svg>
+      </button>
       <button class=iconbtn id=cloudbtn title='3D point-cloud scan of the scene' aria-label='point cloud'>
         <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 2 2 7l10 5 10-5-10-5z'/><path d='M2 17l10 5 10-5M2 12l10 5 10-5'/></svg>
       </button>
@@ -1227,6 +1249,16 @@ textarea#text::placeholder { color: var(--dim); }
         <div class=sayjarvis id=sayjarvis></div>
       </div>
       <div class=talkhint id=talkhint>Tap the orb to talk &middot; or say &ldquo;Hey&nbsp;Jarvis&rdquo;</div>
+      <div class=timeline id=timeline>
+        <div class=tl-head>
+          <span class=tl-title>TIMELINE</span>
+          <span class=tl-time id=tl-time>—</span>
+          <button class=tl-play id=tl-play title='Play'>▶</button>
+          <button class=tl-x id=tl-close title='Close'>×</button>
+        </div>
+        <div class=tl-preview><img id=tl-img alt=''><div class=tl-cap id=tl-cap></div></div>
+        <input type=range class=tl-slider id=tl-slider min=0 max=0 value=0>
+      </div>
     </div>
 
     <!-- ===== SYSTEMS rail — always-on operational transparency ===== -->
@@ -1714,10 +1746,34 @@ $('#graphbtn') && ($('#graphbtn').onclick = openGraph);
 $('#graphclose') && ($('#graphclose').onclick = closeGraph);
 $('#cloudbtn') && ($('#cloudbtn').onclick = () => window.openPointCloud && window.openPointCloud());
 $('#cloudclose') && ($('#cloudclose').onclick = () => window.closePointCloud && window.closePointCloud());
+
+/* ===== timeline scrubber (scrub back through what Jarvis saw) ===== */
+let _tlData = [], _tlPlay = null;
+async function openTimeline() {
+  let j; try { j = await (await fetch('/memory/visual/recent')).json(); } catch (e) { j = { items: [] }; }
+  _tlData = (j.items || []).slice().reverse(); // oldest -> newest
+  if (!_tlData.length) { toast('No visual memory yet', 'ok'); return; }
+  const sl = $('#tl-slider'); sl.max = _tlData.length - 1; sl.value = _tlData.length - 1;
+  tlShow(_tlData.length - 1); $('#timeline').classList.add('open');
+}
+function tlShow(i) { const it = _tlData[i]; if (!it) return;
+  $('#tl-img').src = it.frame_url || '/snapshot.jpg'; $('#tl-cap').textContent = it.caption || ''; $('#tl-time').textContent = _ago(it.ts); }
+function tlStop() { if (_tlPlay) { clearInterval(_tlPlay); _tlPlay = null; } const p = $('#tl-play'); p.classList.remove('on'); p.textContent = '▶'; }
+function closeTimeline() { $('#timeline').classList.remove('open'); tlStop(); }
+$('#tl-slider') && ($('#tl-slider').oninput = e => { tlStop(); tlShow(+e.target.value); });
+$('#tl-play') && ($('#tl-play').onclick = () => {
+  if (_tlPlay) { tlStop(); return; }
+  const p = $('#tl-play'); p.classList.add('on'); p.textContent = '❚❚'; const sl = $('#tl-slider');
+  _tlPlay = setInterval(() => { let v = +sl.value + 1; if (v > +sl.max) v = 0; sl.value = v; tlShow(v); }, 700);
+});
+$('#tl-close') && ($('#tl-close').onclick = closeTimeline);
+$('#timelinebtn') && ($('#timelinebtn').onclick = () => { $('#timeline').classList.contains('open') ? closeTimeline() : openTimeline(); });
+
 window.addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
   if ($('#graphview').classList.contains('open')) closeGraph();
   if ($('#pointcloud').classList.contains('open') && window.closePointCloud) window.closePointCloud();
+  if ($('#timeline').classList.contains('open')) closeTimeline();
 });
 async function showEntityDetail(label) {
   const det = $('#entity-detail');
