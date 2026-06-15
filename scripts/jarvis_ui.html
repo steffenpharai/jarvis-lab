@@ -1012,6 +1012,23 @@ textarea#text::placeholder { color: var(--dim); }
   .composer.dock { width: 96vw; }
   .presence, .talkbtn { top: 33% !important; }
 }
+
+/* ===== capability catalog + activity ledger (intel panes) ===== */
+.tool-cat { font: 600 9px/1 'Geist Mono', monospace; letter-spacing: .16em; text-transform: uppercase;
+  color: var(--accent); margin: 12px 0 5px; display: flex; align-items: center; gap: 6px; }
+.tool-cat span { color: var(--dim); font-weight: 500; }
+.tool-item { padding: 6px 8px; border-radius: var(--r-sm); border: 1px solid transparent; }
+.tool-item:hover { background: var(--bg); border-color: var(--border); }
+.tool-item .tn { display: block; font: 600 12px/1.3 'Geist Mono', monospace; color: var(--text); }
+.tool-item.gated .tn::after { content: ' ⚷'; color: var(--warn); font-size: 10px; }
+.tool-item .td { display: block; font-size: 11px; color: var(--muted); line-height: 1.35; margin-top: 1px; }
+.act-item { display: flex; align-items: center; gap: 8px; padding: 6px 4px; border-bottom: 1px solid var(--border);
+  font: 500 11.5px/1.4 'Geist Mono', monospace; }
+.act-item .act-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); flex-shrink: 0; }
+.act-item.err .act-dot { background: var(--bad); }
+.act-item .act-name { color: var(--accent); font-weight: 600; }
+.act-item .act-args { color: var(--muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.act-item .act-ms { color: var(--dim); font-variant-numeric: tabular-nums; }
 </style>
 
 <body>
@@ -1113,10 +1130,12 @@ textarea#text::placeholder { color: var(--dim); }
       </button>
     </div>
     <div class=rightcol-tabs role=tablist>
-      <button class='tab active' data-pane=conv role=tab>Conversation</button>
-      <button class='tab' data-pane=live role=tab>Live <span class=tab-badge id=live-count>0</span></button>
+      <button class='tab active' data-pane=conv role=tab>Talk</button>
+      <button class='tab' data-pane=activity role=tab>Activity</button>
+      <button class='tab' data-pane=tools role=tab>Tools <span class=tab-badge id=tools-count>0</span></button>
       <button class='tab' data-pane=seen role=tab>Seen <span class=tab-badge id=seen-count>0</span></button>
       <button class='tab' data-pane=memory role=tab>Memory <span class=tab-badge id=mem-count>0</span></button>
+      <button class='tab' data-pane=live role=tab>Live <span class=tab-badge id=live-count>0</span></button>
       <button class='tab' data-pane=pins role=tab>Pinned <span class=tab-badge id=pin-count>0</span></button>
     </div>
 
@@ -1129,6 +1148,14 @@ textarea#text::placeholder { color: var(--dim); }
       <div class=empty id=live-empty>
         Live mode is off. Press <span class=kbd>L</span> or tap the Live button on the feed to start. Jarvis narrates the scene every few seconds, skipping when nothing changes.
       </div>
+    </div>
+    <div class='pane hidden' id=pane-activity>
+      <div class=empty id=activity-empty>No tool activity yet. Jarvis logs every tool call here.</div>
+      <div id=activity-list></div>
+    </div>
+    <div class='pane hidden' id=pane-tools>
+      <div class=mem-search><input type=text id=toolsearch placeholder='Filter capabilities…'></div>
+      <div id=tools-list></div>
     </div>
     <div class='pane hidden' id=pane-seen>
       <div class=mem-search>
@@ -1355,14 +1382,49 @@ function toast(msg, kind = '') {
 $$('.tab').forEach(t => { t.onclick = () => switchPane(t.dataset.pane); });
 function switchPane(name) {
   $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.pane === name));
-  paneConv.classList.toggle('hidden', name !== 'conv');
-  paneLive.classList.toggle('hidden', name !== 'live');
-  paneSeen.classList.toggle('hidden', name !== 'seen');
-  paneMem.classList.toggle('hidden', name !== 'memory');
-  panePins.classList.toggle('hidden', name !== 'pins');
+  $$('.pane').forEach(p => p.classList.toggle('hidden', p.id !== 'pane-' + name));
   if (name === 'memory') loadMemory();
   if (name === 'pins') loadPins();
   if (name === 'seen') loadSeen();
+  if (name === 'tools') loadTools();
+  if (name === 'activity') loadActivity();
+}
+
+/* ===== capability catalog + activity ledger (transparency) ===== */
+async function loadTools(q = '') {
+  try {
+    const j = await (await fetch('/tools')).json();
+    const tools = j.tools || [];
+    const tc = $('#tools-count'); if (tc) tc.textContent = tools.length;
+    const ql = q.toLowerCase();
+    const filt = tools.filter(t => !ql || t.name.toLowerCase().includes(ql) || (t.description || '').toLowerCase().includes(ql));
+    const byCat = {}; filt.forEach(t => { (byCat[t.category] = byCat[t.category] || []).push(t); });
+    const host = $('#tools-list');
+    host.innerHTML = Object.keys(byCat).sort().map(cat =>
+      '<div class=tool-cat>' + escapeHtml(cat) + ' <span>' + byCat[cat].length + '</span></div>' +
+      byCat[cat].map(t => '<div class="tool-item' + (t.safety !== 'safe' ? ' gated' : '') + '">' +
+        '<span class=tn>' + escapeHtml(t.name) + '</span>' +
+        '<span class=td>' + escapeHtml((t.description || '').split('. ')[0]) + '</span></div>').join('')
+    ).join('') || '<div class=empty>No matching capabilities.</div>';
+  } catch (e) { $('#tools-list').innerHTML = '<div class=empty>Could not load tools.</div>'; }
+}
+$('#toolsearch') && $('#toolsearch').addEventListener('input', (e) => {
+  clearTimeout(window._tlT); window._tlT = setTimeout(() => loadTools(e.target.value.trim()), 150);
+});
+async function loadActivity() {
+  try {
+    const j = await (await fetch('/tools/calls?limit=80')).json();
+    const items = j.items || [];
+    const emp = $('#activity-empty'); if (emp) emp.style.display = items.length ? 'none' : '';
+    $('#activity-list').innerHTML = items.map(it =>
+      '<div class="act-item ' + (it.ok ? 'ok' : 'err') + '">' +
+        '<span class=act-dot></span>' +
+        '<span class=act-name>' + escapeHtml(it.name) + '</span>' +
+        '<span class=act-args>' + escapeHtml(_summarizeArgs(it.args || {})) + '</span>' +
+        '<span class=act-ms>' + (it.ms != null ? Math.round(it.ms) + 'ms' : '') + '</span>' +
+      '</div>'
+    ).join('');
+  } catch (e) { /* ignore */ }
 }
 
 /* ===== SYSTEMS rail (operational transparency) ===== */
@@ -1414,7 +1476,14 @@ async function tickMetrics() {
     liveCount.textContent = m.live_observations;
     memCount.textContent = m.memory_count;
     const sc = $('#seen-count'); if (sc) sc.textContent = m.vmem_count || 0;
+    const tcb = document.getElementById('tools-count'); if (tcb) tcb.textContent = m.tool_count || 0;
     updateSysRail(m);
+    // live-refresh the activity ledger while it's the open pane
+    const intelO = document.getElementById('intel');
+    if (intelO && intelO.classList.contains('open')) {
+      const ap = document.getElementById('pane-activity');
+      if (ap && !ap.classList.contains('hidden')) loadActivity();
+    }
     const tele = $('#teleHint');
     if (tele) tele.innerHTML =
       'RAM ' + m.ram_avail_mb + ' / ' + m.ram_total_mb + ' MB<br>' +
