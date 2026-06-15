@@ -98,7 +98,7 @@
 /* ===== SYSTEMS rail — always-on operational console (Palantir/Lattice) ===== */
 .sysrail {
   position: fixed; left: 12px; top: 50px; bottom: calc(var(--dock-h, 150px) + 28px);
-  width: 168px; z-index: 33; display: flex; flex-direction: column; gap: 12px;
+  width: 198px; z-index: 33; display: flex; flex-direction: column; gap: 12px;
   padding: 12px 12px 10px; overflow-y: auto;
   background: var(--glass-fill); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur);
   border: 1px solid var(--border-strong); border-top-color: var(--glass-edge); border-radius: var(--r-lg);
@@ -124,6 +124,21 @@
 .sys-row.off .sv, .sys-row.off .sl { color: var(--dim); }
 .sys-row.warn .sv { color: var(--warn); }
 .sys-row.bad .sv { color: var(--bad); }
+/* live reasoning stream (plan -> act -> observe) */
+.sys-reason { flex: 1; min-height: 0; }
+.reason-list { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; max-height: 34vh; padding-right: 2px; }
+.reason-list::-webkit-scrollbar { width: 0; }
+.reason-idle { font: 500 10px/1.4 'Geist Mono', monospace; color: var(--dim); letter-spacing: .06em; }
+.rstep { display: flex; align-items: baseline; gap: 6px; font: 500 10.5px/1.35 'Geist Mono', monospace; animation: rstepIn .25s var(--ease-out); }
+@keyframes rstepIn { from { opacity: 0; transform: translateX(-4px); } to { opacity: 1; transform: none; } }
+.rstep .rk { flex-shrink: 0; width: 26px; font-weight: 700; letter-spacing: .04em; }
+.rstep.plan .rk { color: var(--cyan); }
+.rstep.act .rk { color: var(--accent); }
+.rstep.see .rk { color: var(--ok); }
+.rstep.done .rk { color: var(--ok); }
+.rstep.err .rk { color: var(--bad); }
+.rstep .rt { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rstep.done .rt, .rstep.see .rt { color: var(--text); }
 @media (max-width: 900px) { .sysrail { display: none; } }
 
 /* always-on targeting frame — corner brackets read instantly as "HUD" */
@@ -1127,6 +1142,10 @@ textarea#text::placeholder { color: var(--dim); }
         <div class=sys-row id=sys-watch><span class=sl>WATCH</span><span class=sv>—</span></div>
         <div class=sys-row id=sys-mem><span class=sl>MEM</span><span class=sv>—</span></div>
       </div>
+      <div class=sys-grp sys-reason>
+        <div class=sys-h>REASONING</div>
+        <div class=reason-list id=reason-list><div class=reason-idle>awaiting input</div></div>
+      </div>
     </aside>
 
     <aside class=intel id=intel aria-hidden=true>
@@ -1567,6 +1586,20 @@ function setOps(text, busy) {
   r.classList.toggle('busy', !!busy);
   const t = document.getElementById('sys-opt'); if (t) t.textContent = text || 'standby';
 }
+// live REASONING stream (plan -> act -> observe), Palantir/Lattice transparency
+const _RK = { plan: 'PLAN', act: 'ACT', see: 'SEE', done: 'DONE', err: 'ERR' };
+function reasonPush(kind, text) {
+  const list = document.getElementById('reason-list'); if (!list) return;
+  const idle = list.querySelector('.reason-idle'); if (idle) idle.remove();
+  const d = document.createElement('div');
+  d.className = 'rstep ' + (kind || 'act');
+  d.innerHTML = '<span class=rk></span><span class=rt></span>';
+  d.querySelector('.rk').textContent = _RK[kind] || '··';
+  d.querySelector('.rt').textContent = text || '';
+  list.appendChild(d);
+  while (list.children.length > 40) list.removeChild(list.firstChild);
+  list.scrollTop = list.scrollHeight;
+}
 setAmbient('idle');  // edge-glow voice presence on from boot
 function showCaption(t) {
   if (!livecap) return;
@@ -1847,6 +1880,7 @@ function attachTurn(turn_id, jmsg, kind) {
       setLive('idle', 'transcribing'); phaseBadge.textContent = 'transcribing';
     } else if (ph === 'capturing') {
       setLive('recording', 'looking'); phaseBadge.textContent = 'looking';
+      reasonPush('act', 'capture frame');
       if (m.question && kind === 'regenerate') {
         const msg = makeUserMsg(m.question, 'typed');
         paneConv.insertBefore(msg, jmsg);
@@ -1867,10 +1901,13 @@ function attachTurn(turn_id, jmsg, kind) {
       }
     } else if (ph === 'thinking') {
       setLive('recording', 'reasoning'); phaseBadge.textContent = 'reasoning';
+      reasonPush('plan', 'reason over scene');
     } else if (ph === 'agent_start') {
       phaseBadge.textContent = 'planning';
+      reasonPush('plan', 'plan · ' + (m.max_steps || '?') + ' steps');
       ensureAgentSteps(jmsg);
     } else if (ph === 'agent_step') {
+      reasonPush(m.ok === false ? 'err' : 'act', (m.tool || 'tool') + (m.args ? ' ' + _summarizeArgs(m.args) : ''));
       appendAgentStep(jmsg, m);
     } else if (ph === 'token') {
       raw += m.delta; scheduleRender(); sayReply(raw);
@@ -1878,6 +1915,7 @@ function attachTurn(turn_id, jmsg, kind) {
       enqueueSegment(m, bubble);
     } else if (ph === 'speaking') {
       setLive('idle', 'speaking'); phaseBadge.textContent = 'speaking';
+      reasonPush('see', 'reply ready');
     } else if (ph === 'cancelled') {
       phaseBadge.textContent = 'stopped'; bubble.classList.remove('streaming');
     } else if (ph === 'error') {
@@ -2077,6 +2115,7 @@ function doInvestigate(opts) {
   const fuEl = card.querySelector('.inv-followups');
   openIntel('conv');
   isStreaming = true; setComposerBusy(true);
+  reasonPush('plan', 'investigate · ' + (subject || (opts.point ? 'tapped spot' : 'center')));
   showReticle([0, 0, 1, 1], false, 'scanning');
   setLive('recording', 'investigating');
 
@@ -2108,9 +2147,11 @@ function doInvestigate(opts) {
         if (STATUS[ph]) { statusEl.textContent = STATUS[ph]; setOps(STATUS[ph], ph !== 'done'); }
         if (ph === 'located') {
           locBox = m.bbox;
+          reasonPush('act', 'locate · ' + (m.method || (m.bbox ? 'found' : 'full')));
           if (m.bbox) showReticle(m.bbox, true, (m.method === 'grid' ? 'located' : m.method === 'point' ? 'target' : 'subject'));
           else showReticle([0, 0, 1, 1], false, 'whole scene');
         } else if (ph === 'zoomed') {
+          reasonPush('act', 'zoom ' + (m.zoom || 1) + '×');
           if (m.bbox) showReticle(m.bbox, true, 'enhancing');
           stageImg.onload = () => stageImg.classList.add('shown');
           stageImg.src = m.zoom_url;
@@ -2125,9 +2166,12 @@ function doInvestigate(opts) {
           confEl.querySelector('.cval').textContent = m.confidence || '—';
           confEl.querySelector('.meter i').style.width = conf === 'high' ? '100%' : conf === 'medium' ? '62%' : conf === 'low' ? '30%' : '50%';
           card.querySelector('.subj').textContent = m.name || subject || 'Result';
+          reasonPush('see', (m.name || '?') + ' · ' + (m.confidence || ''));
         } else if (ph === 'researched') {
+          reasonPush('act', 'web · ' + (m.query || ''));
           fillInvWeb(webEl, { wikipedia: m.wikipedia, search: m.search });
         } else if (ph === 'error') {
+          reasonPush('err', m.error || 'failed');
           statusEl.textContent = 'error';
           webEl.hidden = false; webEl.innerHTML = '<div class=hsnip style="color:var(--bad)">' + escapeHtml(m.error || 'failed') + '</div>';
           es.close(); cleanup(); currentTurn = null;
@@ -2135,6 +2179,7 @@ function doInvestigate(opts) {
           const res = m.result;
           card.classList.add('done');
           statusEl.textContent = 'done';
+          reasonPush('done', 'investigate complete');
           if (res.web) fillInvWeb(webEl, res.web);
           lastInv = { bbox: res.bbox, subject: res.subject || subject };
           // follow-ups
