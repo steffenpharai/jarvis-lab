@@ -2655,6 +2655,439 @@ def summarize_page(ctx, url: str) -> dict:
 
 
 # ============================================================================
+# IRON-MAN VISION  —  enhance -> locate -> zoom -> identify -> web
+# ============================================================================
+#
+# The "Jarvis vision" loop: point the camera at something, ask what it is,
+# then drill in ("what kind of bird?") and Jarvis auto-locates the subject,
+# digitally ZOOMS (crop + low-light enhance + upscale), re-identifies at high
+# detail, and looks it up on the web. Works in dim rooms (auto-brightness) and
+# on arbitrary subjects (open-vocabulary grounding via the VLM, plus a robust
+# grid-cell fallback). Drives the dashboard's Vision HUD via run_investigate().
+
+
+def _mean_luma(jpg_bytes: bytes) -> float:
+    """Mean luminance 0-255 of a JPEG, via a 1x1 gray downscale."""
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error",
+             "-f", "mjpeg", "-i", "-",
+             "-vf", "format=gray,scale=1:1", "-frames:v", "1",
+             "-f", "rawvideo", "-"],
+            input=jpg_bytes, capture_output=True, timeout=4,
+        )
+        if proc.stdout:
+            return float(proc.stdout[0])
+    except Exception:
+        pass
+    return 128.0
+
+
+def _enhance_vf(luma: float) -> str:
+    """ffmpeg filter chain tuned to scene brightness. Dark scenes get a big
+    brighten+gamma lift; bright scenes get only mild contrast + sharpen.
+    Always finishes with a subtle saturation + unsharp pass."""
+    if luma < 45:
+        b, c, g = 0.32, 1.7, 1.55
+    elif luma < 80:
+        b, c, g = 0.20, 1.45, 1.35
+    elif luma < 120:
+        b, c, g = 0.10, 1.25, 1.18
+    elif luma < 160:
+        b, c, g = 0.03, 1.12, 1.06
+    else:
+        b, c, g = 0.0, 1.08, 1.0
+    return (f"eq=brightness={b}:contrast={c}:gamma={g}:saturation=1.15,"
+            f"unsharp=5:5:0.9:5:5:0.0")
+
+
+def _render_region(ctx: ToolContext, raw_jpg: bytes, out_jpg: Path,
+                   bbox: tuple | None, *, enhance: bool = True,
+                   luma: float | None = None, target_long: int = 768) -> dict:
+    """Crop a normalised (x, y, w, h) region from a raw camera JPEG, optionally
+    low-light enhance, and upscale so the long edge ~= target_long (digital
+    zoom). bbox=None renders the full frame. Returns {bbox, px, zoom}."""
+    cw, ch = ctx.cam_w, ctx.cam_h
+    if bbox is None:
+        x, y, w, h = 0.0, 0.0, 1.0, 1.0
+    else:
+        x, y, w, h = bbox
+    cx = max(0, min(cw - 16, int(x * cw)))
+    cy = max(0, min(ch - 16, int(y * ch)))
+    pw = max(32, min(cw - cx, int(w * cw)))
+    ph = max(32, min(ch - cy, int(h * ch)))
+    if luma is None:
+        luma = _mean_luma(raw_jpg)
+    long_edge = max(pw, ph)
+    zoom = max(1.0, min(4.0, target_long / float(long_edge)))
+    ow, oh = int(pw * zoom), int(ph * zoom)
+    vf = [f"crop={pw}:{ph}:{cx}:{cy}"]
+    if enhance:
+        vf.append(_enhance_vf(luma))
+    vf.append(f"scale={ow}:{oh}:flags=lanczos")
+    subprocess.run(
+        ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+         "-f", "mjpeg", "-i", "-", "-vf", ",".join(vf),
+         "-frames:v", "1", "-q:v", "3", str(out_jpg)],
+        input=raw_jpg, check=True, capture_output=True, timeout=12,
+    )
+    return {
+        "bbox": [round(cx / cw, 4), round(cy / ch, 4),
+                 round(pw / cw, 4), round(ph / ch, 4)],
+        "px": [cx, cy, pw, ph],
+        "zoom": round(zoom, 2),
+        "luma": round(luma, 1),
+    }
+
+
+_GRID_COLS, _GRID_ROWS = 4, 3
+
+
+def _grid_locate(ctx: ToolContext, subject: str, enhanced_full: Path) -> tuple | None:
+    """Robust open-vocabulary localisation for a 3B VLM: instead of regressing
+    pixel coords (unreliable), ask which grid cell contains the subject, then
+    return a padded normalised bbox around that cell. None if not found."""
+    prompt = (
+        f"This image is divided into a grid of {_GRID_COLS} columns "
+        f"(1=left .. {_GRID_COLS}=right) and {_GRID_ROWS} rows "
+        f"(1=top .. {_GRID_ROWS}=bottom). In which single cell is the CENTER "
+        f"of the {subject or 'main subject'}? Reply with ONLY two numbers "
+        f"'column,row' (e.g. '3,2'). If the {subject or 'subject'} is not "
+        f"visible, reply '0,0'."
+    )
+    raw = _vlm_oneshot(ctx, prompt, enhanced_full, max_seconds=18.0)
+    nums = re.findall(r"\d+", raw or "")
+    if len(nums) < 2:
+        return None
+    col, row = int(nums[0]), int(nums[1])
+    if col < 1 or row < 1 or col > _GRID_COLS or row > _GRID_ROWS:
+        return None
+    cw_n, ch_n = 1.0 / _GRID_COLS, 1.0 / _GRID_ROWS
+    # centre of the chosen cell, then a padded box ~2 cells wide/tall
+    cxc = (col - 0.5) * cw_n
+    cyc = (row - 0.5) * ch_n
+    half_w, half_h = cw_n, ch_n  # => box spans 2 cells each way
+    x = max(0.0, cxc - half_w)
+    y = max(0.0, cyc - half_h)
+    w = min(1.0 - x, half_w * 2)
+    h = min(1.0 - y, half_h * 2)
+    return (round(x, 4), round(y, 4), round(w, 4), round(h, 4))
+
+
+def _wiki_summary(query: str) -> dict:
+    """Wikipedia summary incl. thumbnail (for the HUD fact card)."""
+    try:
+        sr = HTTP.get("https://en.wikipedia.org/w/api.php",
+                      params={"action": "query", "list": "search",
+                              "srsearch": query, "format": "json", "srlimit": 1})
+        sr.raise_for_status()
+        hits = sr.json().get("query", {}).get("search", [])
+        if not hits:
+            return {"found": False}
+        title = hits[0]["title"]
+        sm = HTTP.get("https://en.wikipedia.org/api/rest_v1/page/summary/"
+                      + urllib.parse.quote(title.replace(" ", "_")))
+        if sm.status_code != 200:
+            return {"found": True, "title": title}
+        j = sm.json()
+        return {
+            "found": True,
+            "title": j.get("title"),
+            "extract": j.get("extract"),
+            "url": (j.get("content_urls", {}).get("desktop", {}) or {}).get("page"),
+            "thumbnail": (j.get("thumbnail") or {}).get("source"),
+        }
+    except Exception as e:  # noqa: BLE001
+        return {"found": False, "error": str(e)}
+
+
+_DDG_ANCHOR_RE = re.compile(r"<a\b([^>]*)>(.*?)</a>", re.S)
+_DDG_HREF_RE = re.compile(r'href="([^"]+)"')
+_DDG_SNIPPET_RE = re.compile(
+    r'class="result__snippet"[^>]*>(.*?)</a>', re.S)
+
+
+def _strip_tags(s: str) -> str:
+    import html as _html
+    return _html.unescape(
+        re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", s or ""))).strip()
+
+
+def _ddg_unwrap(href: str) -> str:
+    """DDG wraps result links as //duckduckgo.com/l/?uddg=<urlencoded>."""
+    href = href.replace("&amp;", "&")
+    if "uddg=" in href:
+        q = urllib.parse.urlparse(
+            href if "://" in href else "https:" + href).query
+        uddg = urllib.parse.parse_qs(q).get("uddg")
+        if uddg:
+            return urllib.parse.unquote(uddg[0])
+    if href.startswith("//"):
+        return "https:" + href
+    return href
+
+
+_DDG_UA = ("Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 "
+           "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+
+
+@tool(
+    "web_search",
+    description="General web search with real result links (title, url, "
+                "snippet). Use this for facts, identifications, prices, "
+                "species/model/brand lookups — anything where you need live "
+                "results from the open web, not just an encyclopedia entry.",
+    category="web",
+    schema={
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "n": {"type": "integer", "description": "max results (1-8)"},
+        },
+        "required": ["query"],
+    },
+)
+def web_search(query: str, n: int = 5) -> dict:
+    n = max(1, min(8, int(n)))
+    results: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(title: str, url: str, snippet: str = "") -> None:
+        url = (url or "").strip()
+        if not url or url in seen or "duckduckgo.com" in url:
+            return
+        seen.add(url)
+        results.append({"title": _strip_tags(title), "url": url,
+                        "snippet": _strip_tags(snippet)})
+
+    try:
+        r = HTTP.get("https://html.duckduckgo.com/html/",
+                     params={"q": query}, headers={"User-Agent": _DDG_UA})
+        if r.status_code == 200:
+            snips = _DDG_SNIPPET_RE.findall(r.text)
+            si = 0
+            for attrs, inner in _DDG_ANCHOR_RE.findall(r.text):
+                if "result__a" not in attrs:
+                    continue
+                m = _DDG_HREF_RE.search(attrs)
+                if not m:
+                    continue
+                snip = snips[si] if si < len(snips) else ""
+                si += 1
+                _add(inner, _ddg_unwrap(m.group(1)), snip)
+                if len(results) >= n:
+                    break
+    except Exception as e:  # noqa: BLE001
+        return {"query": query, "results": [], "error": str(e)}
+
+    # Fallback to the lite endpoint if the html layout yielded nothing.
+    if not results:
+        try:
+            r = HTTP.post("https://lite.duckduckgo.com/lite/",
+                          data={"q": query}, headers={"User-Agent": _DDG_UA})
+            if r.status_code == 200:
+                for attrs, inner in _DDG_ANCHOR_RE.findall(r.text):
+                    m = _DDG_HREF_RE.search(attrs)
+                    if not m:
+                        continue
+                    url = _ddg_unwrap(m.group(1))
+                    if url.startswith("http"):
+                        _add(inner, url)
+                    if len(results) >= n:
+                        break
+        except Exception as e:  # noqa: BLE001
+            return {"query": query, "results": results, "error": str(e)}
+
+    return {"query": query, "count": len(results), "results": results}
+
+
+def _clean_query(s: str) -> str:
+    """Turn a model-authored identification/search line into a clean web query:
+    strip quotes/brackets/trailing punctuation, drop hedge words, cap length."""
+    s = (s or "").strip().strip("\"'`*").strip()
+    s = re.sub(r"^(a|an|the|some|likely|possibly|probably)\s+", "", s, flags=re.I)
+    s = re.sub(r"[\"'`\[\](){}]", "", s)
+    s = re.sub(r"\s+", " ", s).strip(" .,:;-")
+    words = s.split()
+    return " ".join(words[:8])
+
+
+def _parse_identify(text: str, subject: str) -> dict:
+    """Parse the structured identify reply (ID/CONFIDENCE/DETAILS/SEARCH)."""
+    out = {"name": "", "confidence": "", "details": "", "search": ""}
+    for line in (text or "").splitlines():
+        m = re.match(r"\s*(ID|CONFIDENCE|DETAILS|SEARCH)\s*[:\-]\s*(.+)",
+                     line, re.I)
+        if m:
+            out[m.group(1).lower().replace("id", "name")
+                if m.group(1).upper() == "ID" else m.group(1).lower()] = \
+                m.group(2).strip()
+    # fallbacks if the model ignored the format
+    if not out["name"]:
+        first = _strip_tags(text).strip().split(". ")[0][:80]
+        out["name"] = first or (subject or "unknown")
+    if not out["search"]:
+        out["search"] = out["name"] if out["name"] else subject
+    return out
+
+
+def run_investigate(ctx: ToolContext, *, subject: str = "", point=None,
+                    region=None, web: bool = True,
+                    on_event=None) -> dict:
+    """The full Iron-Man vision pipeline. Emits progress via on_event(dict) for
+    the SSE HUD; also returns the final structured result. Reused by both the
+    /investigate endpoint and the `investigate` tool."""
+    def emit(ev: dict) -> None:
+        if on_event is not None:
+            try:
+                on_event(ev)
+            except Exception:
+                pass
+
+    tid = ev_dir = None
+    # artifacts live under session_dir/inv/<id>/ ; served via /inv/<id>/<f>
+    inv_id = "inv-" + uuid_mod.uuid4().hex[:8]
+    ev_dir = ctx.session_dir / "inv" / inv_id
+    ev_dir.mkdir(parents=True, exist_ok=True)
+
+    emit({"phase": "capturing"})
+    raw = ctx.camera.get_latest()
+    luma = _mean_luma(raw)
+    emit({"phase": "enhancing", "luma": round(luma, 1)})
+
+    # full enhanced frame (HUD context + grid localisation surface)
+    full = ev_dir / "full.jpg"
+    _render_region(ctx, raw, full, None, enhance=True, luma=luma,
+                   target_long=max(ctx.cam_w, ctx.cam_h))
+    full_url = f"/inv/{inv_id}/full.jpg"
+
+    # ---- locate -----------------------------------------------------------
+    emit({"phase": "locating", "subject": subject})
+    bbox = None
+    locate_method = "full"
+    if region and len(region) == 4:
+        bbox = tuple(float(v) for v in region)
+        locate_method = "region"
+    elif point and len(point) == 2:
+        px, py = float(point[0]), float(point[1])
+        side = 0.30
+        bbox = (max(0.0, px - side / 2), max(0.0, py - side / 2), side, side)
+        bbox = (bbox[0], bbox[1], min(side, 1.0 - bbox[0]),
+                min(side, 1.0 - bbox[1]))
+        locate_method = "point"
+    elif subject:
+        found = _grid_locate(ctx, subject, full)
+        if found:
+            bbox = found
+            locate_method = "grid"
+    emit({"phase": "located", "bbox": list(bbox) if bbox else None,
+          "method": locate_method})
+
+    # ---- zoom -------------------------------------------------------------
+    emit({"phase": "zooming"})
+    zoom = ev_dir / "zoom.jpg"
+    zmeta = _render_region(ctx, raw, zoom, bbox, enhance=True, luma=luma,
+                           target_long=768)
+    zoom_url = f"/inv/{inv_id}/zoom.jpg"
+    emit({"phase": "zoomed", "zoom_url": zoom_url, "bbox": zmeta["bbox"],
+          "zoom": zmeta["zoom"]})
+
+    # ---- identify (fine-grained) -----------------------------------------
+    emit({"phase": "identifying"})
+    subj_clause = (f"Focus on the {subject}. " if subject else
+                   "Focus on the most prominent / central subject. ")
+    id_prompt = (
+        "You are a visual identification expert looking at an enhanced, "
+        "zoomed-in crop. " + subj_clause +
+        "Identify it as SPECIFICALLY as the image allows — exact species, "
+        "make/model, brand, or type. Reply in EXACTLY this format, one per "
+        "line, nothing else:\n"
+        "ID: <a SHORT specific name, 2-5 words, no full sentence — "
+        "e.g. 'Northern Cardinal', 'Toyota Tacoma', 'office chair'>\n"
+        "CONFIDENCE: <high|medium|low>\n"
+        "DETAILS: <one sentence of distinguishing visual features>\n"
+        "SEARCH: <2-6 word web search query to learn more>"
+    )
+    id_raw = _vlm_oneshot(ctx, id_prompt, zoom, max_seconds=30.0)
+    ident = _parse_identify(id_raw, subject)
+    emit({"phase": "identified", **ident, "raw": id_raw})
+
+    out: dict = {
+        "inv_id": inv_id,
+        "subject": subject,
+        "full_url": full_url,
+        "zoom_url": zoom_url,
+        "bbox": zmeta["bbox"],
+        "zoom": zmeta["zoom"],
+        "luma": zmeta["luma"],
+        "locate_method": locate_method,
+        "identification": ident,
+        "web": {},
+    }
+
+    # ---- web --------------------------------------------------------------
+    # The model's free-form SEARCH line is often over-specific/quoted; the
+    # cleaned identification name is a far better query for wiki + web.
+    query = (_clean_query(ident.get("name", ""))
+             or _clean_query(ident.get("search", ""))
+             or _clean_query(subject))
+    out["query"] = query
+    if web and query:
+        emit({"phase": "researching", "query": query})
+        wiki = _wiki_summary(query)
+        try:
+            srch = web_search(query, n=4)
+        except Exception as e:  # noqa: BLE001
+            srch = {"results": [], "error": str(e)}
+        out["web"] = {"wikipedia": wiki, "search": srch}
+        emit({"phase": "researched", "query": query,
+              "wikipedia": wiki, "search": srch})
+
+    emit({"phase": "done", "result": out})
+    return out
+
+
+@tool(
+    "investigate",
+    description="THE vision drill-down tool. Point the camera at something and "
+                "identify it in detail: auto-locates the subject, digitally "
+                "zooms in (low-light enhance + upscale), identifies it as "
+                "specifically as possible (species, make/model, brand), and "
+                "looks it up on the web. Use for 'what kind of bird/car/plant "
+                "is that', storefronts, products, anything needing a closer "
+                "look. Pass `subject` (e.g. 'bird', 'car', 'the sign').",
+    category="vision",
+    schema={
+        "type": "object",
+        "properties": {
+            "subject": {"type": "string",
+                        "description": "what to zoom in on and identify"},
+            "web": {"type": "boolean",
+                    "description": "also look it up on the web (default true)"},
+        },
+    },
+    needs_ctx=True,
+)
+def investigate(ctx, subject: str = "", web: bool = True) -> dict:
+    res = run_investigate(ctx, subject=subject, web=web)
+    # compact view for the agent transcript (full artifacts via the HUD)
+    ident = res.get("identification", {})
+    wiki = (res.get("web", {}) or {}).get("wikipedia", {}) or {}
+    hits = (((res.get("web", {}) or {}).get("search", {}) or {})
+            .get("results", []) or [])
+    return {
+        "identified": ident.get("name"),
+        "confidence": ident.get("confidence"),
+        "details": ident.get("details"),
+        "zoom_url": res.get("zoom_url"),
+        "wikipedia": {"title": wiki.get("title"),
+                      "extract": (wiki.get("extract") or "")[:600]},
+        "web_results": [{"title": h.get("title"), "url": h.get("url")}
+                        for h in hits[:3]],
+    }
+
+
+# ============================================================================
 # AGENTIC LOOP  (plan -> act -> observe -> re-plan, until natural answer)
 # ============================================================================
 
@@ -2666,12 +3099,12 @@ DEFAULT_AGENT_ALLOW: set[str] = {
     "random_choice", "regex_test", "json_query", "decode", "password",
     "uuid", "cron_next",
     # web (no api keys)
-    "weather", "forecast", "wikipedia", "duckduckgo",
+    "weather", "forecast", "wikipedia", "duckduckgo", "web_search",
     "hn_top", "hn_search", "geocode", "reverse_geocode",
     "github_repo", "currency_rate", "dns", "is_online", "arxiv",
     "rss_fetch", "summarize_page", "pdf_to_text", "whois",
     # vision
-    "zoom_into", "read_all_text", "multi_frame_compare",
+    "investigate", "zoom_into", "read_all_text", "multi_frame_compare",
     "track_object", "depth_of", "timelapse", "research_visual",
     "read_barcode", "barcode_lookup",
     # cloud escalation (Sprint B) — opt-in; only fires if keys are configured
@@ -2759,8 +3192,18 @@ You: <tool_call>{"name": "read_all_text", "args": {}}</tool_call>
 (then): <tool_call>{"name": "duckduckgo", "args": {"query": "<the storefront text>"}}</tool_call>
 (then): It says "BLUE BOTTLE COFFEE". They're a roaster from Oakland — most outlets are in CA, NY, and Tokyo.
 
-Use research_visual for one-shot identification + lookup. Use the manual chain
-when you need to disambiguate or pick a specific search angle.
+Drill-down example — when the user asks to identify something SPECIFICALLY
+("what kind of bird/car/plant is that", a storefront, a product), use
+investigate. It auto-locates the subject, zooms in with low-light enhance,
+identifies it precisely, and looks it up on the web in one call:
+
+User: What kind of bird is that?
+You: <tool_call>{"name": "investigate", "args": {"subject": "bird"}}</tool_call>
+(then): That's a Northern Cardinal — male, by the crest and black face mask. They're year-round residents across the eastern US.
+
+Use investigate for "what kind / what model / tell me more about that <thing>".
+Use research_visual for one-shot text/brand identification + lookup. Use the
+manual chain when you need to disambiguate or pick a specific search angle.
 
 Compound requests. If the user asks for multiple distinct actions in one
 message (e.g. "get the weather AND set a reminder"), emit one <tool_call>

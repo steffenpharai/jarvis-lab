@@ -1119,6 +1119,47 @@ def run_turn(ctx: TurnCtx, payload: dict) -> None:
         ctx.done.set()
 
 
+# ----- investigate (Iron-Man vision: locate -> zoom -> identify -> web) -------
+def run_investigate(ctx: TurnCtx, payload: dict) -> None:
+    """Drive the jarvis_tools.run_investigate pipeline, streaming each phase as
+    an SSE event over the existing turn machinery (/events/<turn_id>)."""
+    try:
+        tctx = jarvis_tools.TOOLS._ctx
+        if tctx is None:
+            ctx.emit({"phase": "error", "error": "tool context not ready"})
+            ctx.result = {"error": "tool context not ready"}
+            return
+        subject = (payload.get("subject") or "").strip()
+        point = payload.get("point")
+        region = payload.get("region")
+        web = bool(payload.get("web", True))
+        result = jarvis_tools.run_investigate(
+            tctx, subject=subject, point=point, region=region, web=web,
+            on_event=lambda ev: ctx.emit(ev),
+        )
+        ctx.result = result
+        # persist a lightweight turn record for history/memory
+        try:
+            ident = result.get("identification", {})
+            MEMORY.record({
+                "turn_id": ctx.tid, "kind": "investigate",
+                "question": f"investigate: {subject}" if subject else "investigate",
+                "transcription": "",
+                "reply": (f"{ident.get('name','')} "
+                          f"({ident.get('confidence','')}) — "
+                          f"{ident.get('details','')}").strip(),
+                "frame_url": result.get("zoom_url"),
+                "audio_url": "", "timings": {}, "ts": time.time(),
+            })
+        except Exception as exc:
+            print(f"[investigate] record error: {exc}", flush=True)
+    except Exception as e:  # noqa: BLE001
+        ctx.emit({"phase": "error", "error": str(e)})
+        ctx.result = {"error": str(e)}
+    finally:
+        ctx.done.set()
+
+
 # ----- live mode --------------------------------------------------------------
 class LiveMode:
     def __init__(self) -> None:
@@ -1533,6 +1574,16 @@ class H(BaseHTTPRequestHandler):
         elif p.startswith("/frame/"):
             tid = p.split("/")[-1].replace(".jpg", "")
             self._send_file(SESSION_DIR / tid / "frame.jpg", "image/jpeg")
+        elif p.startswith("/inv/"):
+            # /inv/<inv_id>/<file>.jpg  — investigate artifacts (full/zoom)
+            parts = p.split("/")
+            if len(parts) >= 4:
+                d, f = parts[2], parts[3]
+                if "/" in d or ".." in d or "/" in f or ".." in f:
+                    self.send_response(400); self.end_headers(); return
+                self._send_file(SESSION_DIR / "inv" / d / f, "image/jpeg")
+            else:
+                self.send_response(404); self.end_headers()
         elif p == "/tools":
             self._send_json(200, {"tools": jarvis_tools.TOOLS.catalog()})
         elif p.startswith("/tools/calls"):
@@ -1648,6 +1699,18 @@ class H(BaseHTTPRequestHandler):
             tid = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
             ctx = register_turn(tid, kind)
             threading.Thread(target=run_turn, args=(ctx, payload),
+                             daemon=True).start()
+            self._send_json(200, {"turn_id": tid})
+        elif p == "/investigate":
+            length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(length) if length else b"{}"
+            try:
+                payload = json.loads(body)
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "bad json"}); return
+            tid = "inv-" + time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
+            ctx = register_turn(tid, "investigate")
+            threading.Thread(target=run_investigate, args=(ctx, payload),
                              daemon=True).start()
             self._send_json(200, {"turn_id": tid})
         elif p.startswith("/turn/") and p.endswith("/stop"):
