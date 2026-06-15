@@ -1,0 +1,19 @@
+[Unit]
+Description=Jarvis NanoOWL open-vocab detector sidecar (container)
+# Start AFTER the VLM so llama-server claims its contiguous GPU memory first;
+# OWL (~900MB) then loads on top. Reverse order risks a VLM CMA/OOM crash-loop.
+After=jarvis-vlm.service docker.service network-online.target
+Requires=docker.service
+Wants=jarvis-vlm.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Wait for the VLM to be healthy before grabbing any GPU.
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1 && exit 0; sleep 3; done; exit 0'
+ExecStart=/home/zip/jarvis-lab/scripts/run_owl_sidecar.sh
+ExecStop=/usr/bin/docker stop owl-sidecar
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

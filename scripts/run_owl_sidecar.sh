@@ -13,13 +13,18 @@ mkdir -p "$DATA"
 
 if [ ! -f "$ENGINE" ]; then
   echo "[owl] building TensorRT image-encoder engine (one-time, ~minutes)..."
+  # Tegra CMA preflight — REQUIRED, the engine build needs large contiguous
+  # allocations and fails with NvMap error 12 (ENOMEM) on a fragmented map.
+  sudo sync || true
+  echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null || true
+  echo 1 | sudo tee /proc/sys/vm/compact_memory >/dev/null || true
   docker run --rm --runtime nvidia --network host -v "$DATA":/data "$IMG" \
     bash -lc "cd /opt/nanoowl && python3 -m nanoowl.build_image_encoder_engine /data/owl_image_encoder_patch32.engine"
 fi
 
 echo "[owl] (re)starting sidecar container..."
 docker rm -f owl-sidecar >/dev/null 2>&1 || true
-docker run -d --name owl-sidecar --restart unless-stopped \
+docker run -d --name owl-sidecar --restart no \
   --runtime nvidia --network host \
   -v "$DATA":/data -v "$SCRIPTS":/sidecar \
   -e OWL_ENGINE=/data/owl_image_encoder_patch32.engine -e OWL_PORT=8086 \
