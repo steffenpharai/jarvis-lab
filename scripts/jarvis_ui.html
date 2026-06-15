@@ -753,6 +753,24 @@ textarea#text::placeholder { color: var(--dim); }
 .inv-followups { display: flex; flex-wrap: wrap; gap: 6px; }
 .inv-fu { font-size: 12px; color: var(--muted); border: 1px solid var(--border); background: var(--bg); padding: 5px 11px; border-radius: var(--r-pill); cursor: pointer; transition: 120ms; }
 .inv-fu:hover { color: var(--text); border-color: var(--accent-soft); background: var(--accent-soft); }
+
+/* ===== visual memory ("Seen") ===== */
+.mem-search { display: flex; gap: 8px; align-items: center; }
+.seen-cap { white-space: nowrap; font: 600 11px/1 'Geist', sans-serif; color: var(--accent); background: transparent; border: 1px solid var(--accent-soft); padding: 7px 11px; border-radius: var(--r-pill); cursor: pointer; transition: 120ms; }
+.seen-cap:hover { background: var(--accent-soft); }
+.seen-cap:disabled { opacity: .6; cursor: default; }
+.seen-card .seen-top { display: flex; align-items: center; gap: 7px; margin-bottom: 3px; }
+.seen-when { font: 600 9px/1 'Geist Mono', monospace; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+.seen-src { font: 600 8px/1 'Geist Mono', monospace; letter-spacing: .1em; text-transform: uppercase; color: var(--ok); border: 1px solid rgba(74,222,128,0.25); border-radius: var(--r-pill); padding: 2px 6px; }
+.seen-objs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.seen-chip { font-size: 10.5px; color: var(--muted); background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-pill); padding: 2px 8px; }
+/* recall card in conversation */
+.recall-lead { font-size: 13.5px; margin-bottom: 9px; }
+.recall-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
+.recall-item { border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; background: var(--bg); }
+.recall-item img { width: 100%; height: 84px; object-fit: cover; display: block; cursor: zoom-in; }
+.recall-item .ri-when { font: 600 9px/1 'Geist Mono', monospace; color: var(--accent); padding: 5px 7px 2px; }
+.recall-item .ri-cap { font-size: 11px; color: var(--muted); padding: 0 7px 7px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 </style>
 
 <body>
@@ -804,6 +822,7 @@ textarea#text::placeholder { color: var(--dim); }
     <div class=rightcol-tabs role=tablist>
       <button class='tab active' data-pane=conv role=tab>Conversation</button>
       <button class='tab' data-pane=live role=tab>Live <span class=tab-badge id=live-count>0</span></button>
+      <button class='tab' data-pane=seen role=tab>Seen <span class=tab-badge id=seen-count>0</span></button>
       <button class='tab' data-pane=memory role=tab>Memory <span class=tab-badge id=mem-count>0</span></button>
       <button class='tab' data-pane=pins role=tab>Pinned <span class=tab-badge id=pin-count>0</span></button>
     </div>
@@ -817,6 +836,13 @@ textarea#text::placeholder { color: var(--dim); }
       <div class=empty id=live-empty>
         Live mode is off. Press <span class=kbd>L</span> or tap the Live button on the feed to start. Jarvis narrates the scene every few seconds, skipping when nothing changes.
       </div>
+    </div>
+    <div class='pane hidden' id=pane-seen>
+      <div class=mem-search>
+        <input type=text id=seensearch placeholder='Search what Jarvis has seen · "keys", "a person", "red bag"…'>
+        <button class='seen-cap' id=seencap title='Remember the current view now'>+ Remember now</button>
+      </div>
+      <div id=seen-list></div>
     </div>
     <div class='pane hidden' id=pane-memory>
       <div class=mem-search><input type=text id=memsearch placeholder='Search memory · turn id, keyword, phrase'></div>
@@ -987,6 +1013,7 @@ const wakebtn     = $('#wakebtn');
 const emptystate  = $('#emptystate');
 const paneConv    = $('#pane-conv');
 const paneLive    = $('#pane-live');
+const paneSeen    = $('#pane-seen');
 const paneMem     = $('#pane-memory');
 const panePins    = $('#pane-pins');
 const liveCount   = $('#live-count');
@@ -1018,10 +1045,12 @@ function switchPane(name) {
   $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.pane === name));
   paneConv.classList.toggle('hidden', name !== 'conv');
   paneLive.classList.toggle('hidden', name !== 'live');
+  paneSeen.classList.toggle('hidden', name !== 'seen');
   paneMem.classList.toggle('hidden', name !== 'memory');
   panePins.classList.toggle('hidden', name !== 'pins');
   if (name === 'memory') loadMemory();
   if (name === 'pins') loadPins();
+  if (name === 'seen') loadSeen();
 }
 
 /* ===== metrics tick ===== */
@@ -1041,6 +1070,7 @@ async function tickMetrics() {
     $('#hudbl').textContent = 'qwen2.5-vl-3b · history: ' + m.history_pairs + ' · memory: ' + m.memory_count;
     liveCount.textContent = m.live_observations;
     memCount.textContent = m.memory_count;
+    const sc = $('#seen-count'); if (sc) sc.textContent = m.vmem_count || 0;
     const tele = $('#teleHint');
     if (tele) tele.innerHTML =
       'RAM ' + m.ram_avail_mb + ' / ' + m.ram_total_mb + ' MB<br>' +
@@ -1670,6 +1700,8 @@ function submit() {
     const parts = v.slice(1).split(/\s+/);
     runCmd(parts[0], parts.slice(1).join(' ')); return;
   }
+  const rq = recallQuery(v);
+  if (rq !== null) { text.value = ''; text.style.height = 'auto'; doRecall(rq); return; }
   const subj = investigateSubject(v);
   if (subj) { text.value = ''; text.style.height = 'auto'; doInvestigate({subject: subj}); return; }
   doTurn({kind: 'text', text: v});
@@ -1970,6 +2002,85 @@ async function loadMemory(query = '') {
       });
     }
   });
+}
+
+/* ===== visual memory ("Seen") ===== */
+function _seenCard(it) {
+  const card = document.createElement('div');
+  card.className = 'mem-card seen-card';
+  const objs = (it.objects || '').split(/,\s*/).filter(Boolean).slice(0, 8);
+  card.innerHTML =
+    '<img src="' + (it.frame_url || '/snapshot.jpg') + '" alt="" loading=lazy>' +
+    '<div class=body>' +
+      '<div class=seen-top><span class=seen-when>' + escapeHtml(it._when || '') + '</span>' +
+        (it.source === 'manual' ? '<span class=seen-src>saved</span>' : '') + '</div>' +
+      '<div class=r>' + escapeHtml(it.caption || '') + '</div>' +
+      (objs.length ? '<div class=seen-objs>' + objs.map(o => '<span class=seen-chip>' + escapeHtml(o) + '</span>').join('') + '</div>' : '') +
+    '</div>';
+  return card;
+}
+function _ago(ts) {
+  const d = Math.max(0, Math.floor(Date.now() / 1000 - ts));
+  if (d < 60) return d + 's ago';
+  if (d < 3600) return Math.floor(d / 60) + 'm ago';
+  if (d < 86400) return Math.floor(d / 3600) + 'h ago';
+  return Math.floor(d / 86400) + 'd ago';
+}
+async function loadSeen(query = '') {
+  const url = query ? '/memory/visual/search?q=' + encodeURIComponent(query) : '/memory/visual/recent';
+  const list = $('#seen-list');
+  try {
+    const j = await (await fetch(url)).json();
+    list.innerHTML = '';
+    if (!j.items || !j.items.length) {
+      list.innerHTML = '<div class=empty>' + (query ? 'Nothing matching “' + escapeHtml(query) + '” in visual memory yet.' : 'Visual memory is building. Jarvis logs what the camera sees as the scene changes — check back, or tap “Remember now”.') + '</div>';
+      return;
+    }
+    j.items.forEach(it => { it._when = _ago(it.ts); list.appendChild(_seenCard(it)); });
+  } catch (e) { list.innerHTML = '<div class=empty>Could not load visual memory.</div>'; }
+}
+$('#seensearch').addEventListener('input', (e) => {
+  clearTimeout(window._seenT);
+  window._seenT = setTimeout(() => loadSeen(e.target.value.trim()), 220);
+});
+$('#seencap').addEventListener('click', async () => {
+  const b = $('#seencap'); b.disabled = true; b.textContent = 'Looking…';
+  try { await fetch('/memory/visual/capture', { method: 'POST' }); await loadSeen($('#seensearch').value.trim()); toast('Saved to visual memory', 'ok'); }
+  catch (e) { toast('Capture failed', 'error'); }
+  b.disabled = false; b.textContent = '+ Remember now';
+});
+
+/* recall routing: "where/when did you see X", "have you seen X" -> visual memory */
+function recallQuery(v) {
+  let m = v.match(/^\s*(?:where|when)\s+(?:did|have)\s+(?:you|i)\s+(?:last\s+)?(?:see|seen|leave|put)\s+(?:my |the |a |an )?(.+?)\s*\??$/i);
+  if (m) return m[1].trim();
+  m = v.match(/^\s*(?:have|did)\s+you\s+(?:see|seen)\s+(?:my |the |a |an )?(.+?)\s*\??$/i);
+  if (m) return m[1].trim();
+  if (/^\s*what\s+(?:have|did)\s+you\s+see(?:n)?\b/i.test(v)) return '';  // timeline
+  return null;
+}
+async function doRecall(query) {
+  makeUserMsg(query ? 'Where did you last see: ' + query : 'What have you seen recently?', 'recall');
+  const jmsg = makeJarvisMsg('recall');
+  const bubble = jmsg.querySelector('.bubble');
+  switchPane('conv');
+  try {
+    const url = query ? '/memory/visual/search?q=' + encodeURIComponent(query) : '/memory/visual/recent';
+    const j = await (await fetch(url)).json();
+    const items = (j.items || []).slice(0, 5);
+    if (!items.length) { finalizeReplyMarkdown(bubble, query ? "I don't have a memory of seeing " + query + " yet." : "I haven't logged anything yet."); bubble.classList.remove('streaming'); return; }
+    const top = items[0];
+    let html = '<div class=recall-lead>' + (query ? 'I last saw <b>' + escapeHtml(query) + '</b> ' + _ago(top.ts) + ':' : 'Recently I saw:') + '</div>';
+    html += '<div class=recall-grid>';
+    items.forEach(it => {
+      html += '<div class=recall-item><img src="' + (it.frame_url || '/snapshot.jpg') + '" loading=lazy>' +
+        '<div class=ri-when>' + _ago(it.ts) + '</div>' +
+        '<div class=ri-cap>' + escapeHtml((it.caption || '').slice(0, 110)) + '</div></div>';
+    });
+    html += '</div>';
+    bubble.innerHTML = html; bubble.classList.remove('streaming');
+    bubble.querySelectorAll('.recall-item img').forEach(im => im.addEventListener('click', () => { $('#lightboximg').src = im.src; $('#lightbox').classList.add('open'); }));
+  } catch (e) { finalizeReplyMarkdown(bubble, 'Could not search visual memory.'); bubble.classList.remove('streaming'); }
 }
 
 function _makeMemoryStepCard(ev) {

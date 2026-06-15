@@ -73,6 +73,19 @@ PHASH_LIVE_GATE = 4     # live mode skips broadcast unless distance > this
 
 SESSION_DIR = LAB / "logs/sessions"
 SESSION_DIR.mkdir(parents=True, exist_ok=True)
+VMEM_DIR = SESSION_DIR / "vmem"
+VMEM_DIR.mkdir(parents=True, exist_ok=True)
+
+_STOPWORDS = {
+    "the", "a", "an", "is", "are", "was", "were", "did", "do", "does", "you",
+    "see", "saw", "seen", "what", "where", "when", "last", "my", "me", "i",
+    "it", "that", "this", "there", "have", "had", "any", "some", "of", "in",
+    "on", "at", "to", "and", "or", "for", "with", "show", "find", "look",
+}
+
+# Updated whenever the user actively uses the VLM, so the ambient visual-memory
+# captioner can yield the GPU to interactive turns.
+LAST_USER_ACTIVITY = {"ts": 0.0}
 
 
 # ----- prompt presets ---------------------------------------------------------
@@ -167,6 +180,32 @@ class Memory:
     CREATE TRIGGER IF NOT EXISTS turns_ad AFTER DELETE ON turns BEGIN
         INSERT INTO turns_fts(turns_fts, rowid, turn_id, question, reply)
             VALUES('delete', old.id, old.turn_id, old.question, old.reply);
+    END;
+
+    -- Spatial-temporal visual memory ("world model"): a persistent, searchable
+    -- log of what the camera has seen over time. Keyframes are captioned by the
+    -- VLM and indexed (FTS now; embedding column reserved for vector recall).
+    CREATE TABLE IF NOT EXISTS visual_memory (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts REAL NOT NULL,
+        caption TEXT,
+        objects TEXT,
+        frame_file TEXT,
+        phash INTEGER,
+        source TEXT,
+        embedding BLOB
+    );
+    CREATE INDEX IF NOT EXISTS idx_vmem_ts ON visual_memory(ts DESC);
+    CREATE VIRTUAL TABLE IF NOT EXISTS vmem_fts
+        USING fts5(caption, objects, content='visual_memory',
+                   content_rowid='id', tokenize='porter');
+    CREATE TRIGGER IF NOT EXISTS vmem_ai AFTER INSERT ON visual_memory BEGIN
+        INSERT INTO vmem_fts(rowid, caption, objects)
+            VALUES (new.id, new.caption, new.objects);
+    END;
+    CREATE TRIGGER IF NOT EXISTS vmem_ad AFTER DELETE ON visual_memory BEGIN
+        INSERT INTO vmem_fts(vmem_fts, rowid, caption, objects)
+            VALUES('delete', old.id, old.caption, old.objects);
     END;
     """
 
@@ -272,6 +311,65 @@ class Memory:
     def count(self) -> int:
         with self.lock:
             return self._con.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
+
+    # --- visual memory (spatial-temporal "world model") ------------------
+    def vmem_record(self, ts: float, caption: str, objects: str,
+                    frame_file: str, phash: int, source: str) -> int:
+        # pHash is unsigned 64-bit; SQLite INTEGER is signed 64-bit. Fold.
+        if phash is not None and phash >= (1 << 63):
+            phash -= (1 << 64)
+        with self.lock:
+            cur = self._con.execute(
+                """INSERT INTO visual_memory
+                   (ts, caption, objects, frame_file, phash, source)
+                   VALUES (?,?,?,?,?,?)""",
+                (ts, caption, objects, frame_file, phash, source),
+            )
+            return cur.lastrowid
+
+    def vmem_recent(self, limit: int = 50) -> list[dict]:
+        with self.lock:
+            rows = self._con.execute(
+                "SELECT id, ts, caption, objects, frame_file, source "
+                "FROM visual_memory ORDER BY ts DESC LIMIT ?", (limit,),
+            ).fetchall()
+        return [self._vrow(r) for r in rows]
+
+    def vmem_search(self, q: str, limit: int = 30) -> list[dict]:
+        q = (q or "").strip()
+        if not q:
+            return self.vmem_recent(limit)
+        # Build a tolerant FTS query: OR the significant tokens, prefix-match.
+        toks = [re.sub(r"[^a-z0-9]", "", w.lower()) for w in q.split()]
+        toks = [t for t in toks if len(t) > 2 and t not in _STOPWORDS]
+        match = " OR ".join(f"{t}*" for t in toks) if toks else q
+        with self.lock:
+            try:
+                rows = self._con.execute(
+                    "SELECT v.id, v.ts, v.caption, v.objects, v.frame_file, "
+                    "v.source FROM vmem_fts f JOIN visual_memory v "
+                    "ON v.id = f.rowid WHERE vmem_fts MATCH ? "
+                    "ORDER BY rank LIMIT ?", (match, limit),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                pat = f"%{q}%"
+                rows = self._con.execute(
+                    "SELECT id, ts, caption, objects, frame_file, source "
+                    "FROM visual_memory WHERE caption LIKE ? OR objects LIKE ? "
+                    "ORDER BY ts DESC LIMIT ?", (pat, pat, limit),
+                ).fetchall()
+        return [self._vrow(r) for r in rows]
+
+    def vmem_count(self) -> int:
+        with self.lock:
+            return self._con.execute(
+                "SELECT COUNT(*) FROM visual_memory").fetchone()[0]
+
+    @staticmethod
+    def _vrow(r) -> dict:
+        return {"id": r[0], "ts": r[1], "caption": r[2] or "",
+                "objects": r[3] or "", "frame_url": f"/vmem/{r[4]}" if r[4] else "",
+                "source": r[5] or ""}
 
     @staticmethod
     def _row(r) -> dict:
@@ -936,6 +1034,7 @@ def get_turn(tid: str) -> TurnCtx | None:
 # ----- turn worker ------------------------------------------------------------
 def run_turn(ctx: TurnCtx, payload: dict) -> None:
     tid = ctx.tid
+    LAST_USER_ACTIVITY["ts"] = time.time()
     work = SESSION_DIR / tid
     work.mkdir(parents=True, exist_ok=True)
     timings: dict = {}
@@ -1123,6 +1222,7 @@ def run_turn(ctx: TurnCtx, payload: dict) -> None:
 def run_investigate(ctx: TurnCtx, payload: dict) -> None:
     """Drive the jarvis_tools.run_investigate pipeline, streaming each phase as
     an SSE event over the existing turn machinery (/events/<turn_id>)."""
+    LAST_USER_ACTIVITY["ts"] = time.time()
     try:
         tctx = jarvis_tools.TOOLS._ctx
         if tctx is None:
@@ -1266,6 +1366,107 @@ class LiveMode:
 LIVE = LiveMode()
 
 
+# ----- visual memory: ambient keyframe captioner (the "world model") ----------
+_VMEM_CAPTION_PROMPT = (
+    "You are building a searchable memory of what a camera sees over time. "
+    "Describe this scene factually in ONE sentence, then list the distinct "
+    "notable objects/people visible. Only mention what is actually visible; "
+    "do not invent. Reply in EXACTLY this format:\n"
+    "SCENE: <one factual sentence>\n"
+    "OBJECTS: <comma-separated nouns, or 'none'>"
+)
+
+
+def _parse_caption(text: str) -> tuple[str, str]:
+    scene, objects = "", ""
+    for line in (text or "").splitlines():
+        m = re.match(r"\s*SCENE\s*[:\-]\s*(.+)", line, re.I)
+        if m:
+            scene = m.group(1).strip()
+        m = re.match(r"\s*OBJECTS?\s*[:\-]\s*(.+)", line, re.I)
+        if m:
+            objects = m.group(1).strip()
+    if not scene:
+        scene = re.sub(r"\s+", " ", (text or "")).strip()[:200]
+    if objects.lower() in ("none", "n/a", ""):
+        objects = ""
+    return scene, objects
+
+
+class VisualMemory:
+    """Ambient, scene-gated keyframe captioner that persists a searchable log of
+    what the camera has seen. The slow side of the dual-loop: it yields the VLM
+    to interactive turns and only fires on real scene change."""
+
+    def __init__(self) -> None:
+        self.enabled = True
+        self.interval_s = 30.0
+        self.min_user_idle_s = 12.0
+        self.last_phash: int | None = None
+        self.last_cap_ts = 0.0
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(target=self._run, name="vmem",
+                                        daemon=True)
+        self._thread.start()
+
+    def set_enabled(self, on: bool) -> None:
+        self.enabled = bool(on)
+
+    def capture_now(self, source: str = "manual") -> dict:
+        """Force-capture a keyframe into visual memory. Returns the record."""
+        raw = CAMERA.get_latest()
+        ph = phash_frame(raw)
+        fname = uuid.uuid4().hex + ".jpg"
+        fpath = VMEM_DIR / fname
+        # 512x384 enhanced-ish capture for legible captions
+        subprocess.run(
+            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+             "-f", "mjpeg", "-i", "-",
+             "-vf", f"scale={VLM_W}:{VLM_H}:flags=lanczos", "-frames:v", "1",
+             "-q:v", "4", str(fpath)],
+            input=raw, check=True, capture_output=True, timeout=10,
+        )
+        cancel = threading.Event()
+        text, _u = stream_vlm(_VMEM_CAPTION_PROMPT, fpath, cancel,
+                              lambda d: None, include_history=False,
+                              read_timeout_s=20.0)
+        scene, objects = _parse_caption(text)
+        rid = MEMORY.vmem_record(time.time(), scene, objects, fname, ph, source)
+        self.last_phash = ph
+        self.last_cap_ts = time.time()
+        return {"id": rid, "caption": scene, "objects": objects,
+                "frame_url": f"/vmem/{fname}", "source": source}
+
+    def _run(self) -> None:
+        # small initial delay so the camera + VLM are up
+        if self._stop.wait(15.0):
+            return
+        while not self._stop.is_set():
+            try:
+                if (self.enabled
+                        and time.time() - LAST_USER_ACTIVITY["ts"]
+                            > self.min_user_idle_s
+                        and _VLM_UP["flag"]):
+                    raw = CAMERA.get_latest(timeout=2.0)
+                    ph = phash_frame(raw)
+                    changed = (self.last_phash is None
+                               or hamming(ph, self.last_phash) > PHASH_LIVE_GATE)
+                    if changed:
+                        self.capture_now(source="ambient")
+            except Exception as exc:
+                print(f"[vmem] {exc}", flush=True)
+            if self._stop.wait(self.interval_s):
+                return
+
+
+VMEM = VisualMemory()
+
+
 # ----- wake-word integration (triggers a voice turn when "Hey Jarvis") --------
 def _wake_callback(score: float) -> None:
     """When wake word detected, fire a talk-mode turn."""
@@ -1351,6 +1552,8 @@ def gather_metrics() -> dict:
         "wake_score": round(WAKE.score, 3) if WAKE.enabled else 0.0,
         "agent_mode_enabled": bool(SETTINGS.get("agent_mode_enabled")),
         "tool_count": len(jarvis_tools.TOOLS.catalog()),
+        "vmem_count": MEMORY.vmem_count(),
+        "vmem_enabled": VMEM.enabled,
     }
 
 
@@ -1537,6 +1740,18 @@ class H(BaseHTTPRequestHandler):
             self._send_json(200, {"items": MEMORY.search(q, 50), "q": q})
         elif p == "/memory/pinned":
             self._send_json(200, {"items": MEMORY.pinned()})
+        elif p == "/memory/visual/recent":
+            self._send_json(200, {"items": MEMORY.vmem_recent(60),
+                                  "enabled": VMEM.enabled,
+                                  "count": MEMORY.vmem_count()})
+        elif p.startswith("/memory/visual/search"):
+            from urllib.parse import unquote
+            q = ""
+            if "?" in p:
+                for kv in p.split("?", 1)[1].split("&"):
+                    if kv.startswith("q="):
+                        q = unquote(kv[2:])
+            self._send_json(200, {"items": MEMORY.vmem_search(q, 40), "q": q})
         elif p == "/export/markdown":
             body = export_markdown().encode()
             self.send_response(200)
@@ -1574,6 +1789,12 @@ class H(BaseHTTPRequestHandler):
         elif p.startswith("/frame/"):
             tid = p.split("/")[-1].replace(".jpg", "")
             self._send_file(SESSION_DIR / tid / "frame.jpg", "image/jpeg")
+        elif p.startswith("/vmem/"):
+            # /vmem/<file>.jpg  — visual-memory keyframes
+            f = p.split("?", 1)[0].split("/")[-1]
+            if "/" in f or ".." in f:
+                self.send_response(400); self.end_headers(); return
+            self._send_file(VMEM_DIR / f, "image/jpeg")
         elif p.startswith("/inv/"):
             # /inv/<inv_id>/<file>.jpg  — investigate artifacts (full/zoom)
             parts = p.split("?", 1)[0].split("/")
@@ -1730,6 +1951,18 @@ class H(BaseHTTPRequestHandler):
                 SETTINGS["live_interval_s"] = 8
                 SETTINGS["scene_cache_enabled"] = True
             self._send_json(200, {"ok": True})
+        elif p == "/memory/visual/capture":
+            try:
+                rec = VMEM.capture_now(source="manual")
+                self._send_json(200, {"ok": True, "item": rec})
+            except Exception as e:  # noqa: BLE001
+                self._send_json(500, {"ok": False, "error": str(e)})
+        elif p == "/memory/visual/enable":
+            VMEM.set_enabled(True)
+            self._send_json(200, {"enabled": True})
+        elif p == "/memory/visual/disable":
+            VMEM.set_enabled(False)
+            self._send_json(200, {"enabled": False})
         elif p == "/live/start":
             ok = LIVE.start()
             self._send_json(200, {"ok": ok, "running": LIVE.is_running()})
@@ -1824,6 +2057,7 @@ def main():
     AUDIO.start()
     AUDIO_MONITOR.start()
     threading.Thread(target=_vlm_health_poller, daemon=True).start()
+    VMEM.start()
 
     # wire up the tool registry
     jarvis_tools.TOOLS.migrate(MEMORY)
@@ -1833,6 +2067,7 @@ def main():
         audio=AUDIO,
         live=LIVE,
         wake=WAKE,
+        visual_memory=VMEM,
         settings=SETTINGS,
         settings_lock=SETTINGS_LOCK,
         presets=PRESETS,

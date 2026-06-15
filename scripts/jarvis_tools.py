@@ -399,6 +399,7 @@ class ToolContext:
     cam_w: int = 1280
     cam_h: int = 720
     mic_device: str = ""
+    visual_memory: Any = None   # VisualMemory (ambient captioner)
 
 
 # ============================================================================
@@ -3092,6 +3093,87 @@ def investigate(ctx, subject: str = "", web: bool = True) -> dict:
 
 
 # ============================================================================
+# VISUAL MEMORY  —  recall what the camera has seen over time ("world model")
+# ============================================================================
+
+def _ago(ts: float) -> str:
+    d = max(0, int(time.time() - ts))
+    if d < 60:
+        return f"{d}s ago"
+    if d < 3600:
+        return f"{d // 60}m ago"
+    if d < 86400:
+        return f"{d // 3600}h ago"
+    return f"{d // 86400}d ago"
+
+
+@tool(
+    "recall_visual",
+    description="Search Jarvis's visual memory of everything the camera has "
+                "seen over time. Use for 'when/where did you last see X', "
+                "'have you seen my keys', 'what did you see earlier'. Returns "
+                "matching past observations with how long ago they were seen.",
+    category="memory",
+    schema={
+        "type": "object",
+        "properties": {
+            "query": {"type": "string",
+                      "description": "what to look for in past observations"},
+            "k": {"type": "integer", "description": "max results (default 6)"},
+        },
+        "required": ["query"],
+    },
+    needs_ctx=True,
+)
+def recall_visual(ctx, query: str, k: int = 6) -> dict:
+    k = max(1, min(20, int(k)))
+    hits = ctx.memory.vmem_search(query, k)
+    return {
+        "query": query,
+        "found": len(hits),
+        "observations": [
+            {"when": _ago(h["ts"]), "caption": h["caption"],
+             "objects": h["objects"], "frame_url": h["frame_url"]}
+            for h in hits
+        ],
+    }
+
+
+@tool(
+    "visual_timeline",
+    description="The most recent things the camera has observed, newest first. "
+                "Use for 'what have you seen recently' or 'what's been "
+                "happening'.",
+    category="memory",
+    schema={"type": "object",
+            "properties": {"n": {"type": "integer"}}},
+    needs_ctx=True,
+)
+def visual_timeline(ctx, n: int = 8) -> dict:
+    n = max(1, min(30, int(n)))
+    items = ctx.memory.vmem_recent(n)
+    return {"count": len(items),
+            "timeline": [{"when": _ago(h["ts"]), "caption": h["caption"],
+                          "objects": h["objects"]} for h in items]}
+
+
+@tool(
+    "remember_now",
+    description="Capture and commit the current camera view to visual memory "
+                "right now (caption + objects). Use when the user says "
+                "'remember this' / 'note what you see'.",
+    category="memory",
+    needs_ctx=True,
+)
+def remember_now(ctx) -> dict:
+    if ctx.visual_memory is None:
+        raise ToolError("visual memory not available")
+    rec = ctx.visual_memory.capture_now(source="manual")
+    return {"saved": True, "caption": rec.get("caption"),
+            "objects": rec.get("objects")}
+
+
+# ============================================================================
 # AGENTIC LOOP  (plan -> act -> observe -> re-plan, until natural answer)
 # ============================================================================
 
@@ -3115,7 +3197,7 @@ DEFAULT_AGENT_ALLOW: set[str] = {
     "ask_claude", "ask_gpt", "ask_gemini", "escalate",
     # memory
     "recall", "recent", "pinned", "whats_new", "list_entities",
-    "summarize_today",
+    "summarize_today", "recall_visual", "visual_timeline", "remember_now",
     # productivity
     "note_create", "note_append", "note_search", "note_list",
     "todo_add", "todo_done", "todo_list", "todo_due_today",
