@@ -1810,7 +1810,178 @@ def read_soc_temp_c() -> float:
     return round(max(temps), 1) if temps else 0.0
 
 
+# ----- Full Jetson telemetry (jtop-grade, read-only, zero GPU cost) -----------
+# Parses a persistent `tegrastats` stream into a rich snapshot: per-core CPU
+# load+freq, GPU (GR3D) util, EMC util, every thermal zone, and the INA3221
+# power rails (instantaneous + running average). Plus nvpmodel power mode and
+# CPU governor. This is how we make ALL Nano diagnostics visible and prove we
+# are driving the hardware at its limits. Degrades gracefully if unavailable.
+class TegraStats:
+    _CPU_RE = re.compile(r"(\d+|off)%?@?(\d+)?")
+    _TEMP_RE = re.compile(r"(\w+?)@([\d.]+)C")
+    _PWR_RE = re.compile(r"(VDD_\w+|VIN_\w+|POM_\w+|NC\w*)\s+(\d+)mW/(\d+)mW")
+    _THROTTLE_C = 85.0  # Orin Nano SoC throttle threshold
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.data: dict = {}
+        self.meta: dict = {}
+        self.ok = False
+        self._proc = None
+        self._thread = None
+        self._stop = threading.Event()
+
+    def start(self):
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(target=self._run, name="tegrastats",
+                                        daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        self._refresh_meta()
+        try:
+            self._proc = subprocess.Popen(
+                ["tegrastats", "--interval", "1000"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        except (FileNotFoundError, OSError):
+            self.ok = False
+            return
+        n = 0
+        for line in self._proc.stdout:
+            if self._stop.is_set():
+                break
+            try:
+                parsed = self._parse(line)
+            except Exception:  # noqa: BLE001 — never let a bad line kill telemetry
+                continue
+            if parsed:
+                with self.lock:
+                    self.data = parsed
+                    self.ok = True
+            n += 1
+            if n % 20 == 0:   # power mode/governor rarely change — sample slowly
+                self._refresh_meta()
+
+    def _parse(self, line: str) -> dict:
+        d: dict = {}
+        m = re.search(r"RAM (\d+)/(\d+)MB", line)
+        if m:
+            d["ram_used_mb"], d["ram_total_mb"] = int(m.group(1)), int(m.group(2))
+        m = re.search(r"SWAP (\d+)/(\d+)MB", line)
+        if m:
+            d["swap_used_mb"], d["swap_total_mb"] = int(m.group(1)), int(m.group(2))
+        m = re.search(r"CPU \[([^\]]+)\]", line)
+        if m:
+            cores = []
+            for c in m.group(1).split(","):
+                mc = re.match(r"(\d+)%@(\d+)", c.strip())
+                if mc:
+                    cores.append({"load": int(mc.group(1)), "freq": int(mc.group(2))})
+                else:
+                    cores.append({"load": 0, "freq": 0, "off": True})
+            d["cpu"] = cores
+        m = re.search(r"GR3D_FREQ (\d+)%", line)
+        if m:
+            d["gpu_util"] = int(m.group(1))
+        m = re.search(r"EMC_FREQ (\d+)%", line)
+        if m:
+            d["emc_util"] = int(m.group(1))
+        temps = {n: float(v) for n, v in self._TEMP_RE.findall(line)}
+        if temps:
+            d["temps"] = temps
+            d["temp_max_c"] = round(max(temps.values()), 1)
+            d["throttle_headroom_c"] = round(self._THROTTLE_C - max(temps.values()), 1)
+        rails = {}
+        for name, now, avg in self._PWR_RE.findall(line):
+            rails[name] = {"now": int(now), "avg": int(avg)}
+        if rails:
+            d["power"] = rails
+            vin = rails.get("VDD_IN") or rails.get("VIN_SYS_5V0") or rails.get("POM_5V_IN")
+            if vin:
+                d["power_total_mw"], d["power_avg_mw"] = vin["now"], vin["avg"]
+            else:
+                d["power_total_mw"] = sum(r["now"] for r in rails.values())
+                d["power_avg_mw"] = sum(r["avg"] for r in rails.values())
+        return d
+
+    def _refresh_meta(self):
+        meta = {}
+        try:
+            out = subprocess.run(["sudo", "-n", "nvpmodel", "-q"],
+                                 capture_output=True, text=True, timeout=5).stdout
+            mm = re.search(r"NV Power Mode:\s*(\S+)", out)
+            if mm:
+                meta["power_mode"] = mm.group(1)
+            mn = re.search(r"^\s*(\d+)\s*$", out, re.M)
+            if mn:
+                meta["power_mode_id"] = int(mn.group(1))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            gov = Path("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
+            if gov.exists():
+                meta["governor"] = gov.read_text().strip()
+        except Exception:  # noqa: BLE001
+            pass
+        try:  # jetson_clocks pins min freq up to max (it doesn't rename the governor)
+            base = Path("/sys/devices/system/cpu/cpu0/cpufreq")
+            meta["jetson_clocks"] = (
+                (base / "scaling_min_freq").read_text().strip()
+                == (base / "scaling_max_freq").read_text().strip())
+        except Exception:  # noqa: BLE001
+            meta["jetson_clocks"] = False
+        if meta:
+            with self.lock:
+                self.meta.update(meta)
+
+    def snapshot(self) -> dict:
+        with self.lock:
+            d = dict(self.data)
+            d["meta"] = dict(self.meta)
+            d["ok"] = self.ok
+        return d
+
+
+TEGRA = TegraStats()
+
+
+_JCLK_STORE = "/tmp/jarvis_jetson_clocks_before.txt"
+
+
+def set_jetson_clocks(on: bool) -> dict:
+    """Lock all clocks to max (jetson_clocks) for peak throughput, or restore
+    DVFS. Safe on this thermally-headroomed box (MAXN_SUPER, ~28C margin); it
+    trades a little idle power for zero clock-ramp latency. We snapshot the
+    pre-boost state so --restore is clean; if that snapshot is gone, fall back
+    to resetting each core's scaling_min_freq to the hardware minimum."""
+    try:
+        if on:
+            subprocess.run(["sudo", "-n", "jetson_clocks", "--store", _JCLK_STORE],
+                           check=False, capture_output=True, timeout=20)
+            subprocess.run(["sudo", "-n", "jetson_clocks"], check=True,
+                           capture_output=True, timeout=20)
+        elif os.path.exists(_JCLK_STORE):
+            subprocess.run(["sudo", "-n", "jetson_clocks", "--restore", _JCLK_STORE],
+                           check=True, capture_output=True, timeout=20)
+        else:
+            for c in Path("/sys/devices/system/cpu").glob("cpu[0-9]*/cpufreq"):
+                try:
+                    lo = (c / "cpuinfo_min_freq").read_text().strip()
+                    subprocess.run(["sudo", "-n", "tee", str(c / "scaling_min_freq")],
+                                   input=lo, text=True, check=True,
+                                   capture_output=True, timeout=5)
+                except Exception:  # noqa: BLE001
+                    pass
+    except (subprocess.CalledProcessError, FileNotFoundError,
+            subprocess.TimeoutExpired) as e:
+        return {"ok": False, "error": str(e)}
+    TEGRA._refresh_meta()
+    return {"ok": True, "jetson_clocks": on}
+
+
 def gather_metrics() -> dict:
+    _ns = TEGRA.snapshot()
     m = read_meminfo()
     mem_total = int(re.findall(r"\d+", m.get("MemTotal", "0"))[0]) / 1024.0
     mem_avail = int(re.findall(r"\d+", m.get("MemAvailable", "0"))[0]) / 1024.0
@@ -1835,6 +2006,16 @@ def gather_metrics() -> dict:
         "owl_up": jarvis_tools._owl_available(),
         "watch_count": len(MEMORY.watch_list(only_active=True)),
         "uptime_s": round(time.time() - _BOOT_TS),
+        # headline Nano telemetry for the always-on rail (full detail at /nano)
+        "gpu_util": _ns.get("gpu_util"),
+        "emc_util": _ns.get("emc_util"),
+        "power_w": (round(_ns["power_total_mw"] / 1000.0, 1)
+                    if _ns.get("power_total_mw") else None),
+        "cpu_load_avg": (round(sum(c["load"] for c in _ns["cpu"]) / len(_ns["cpu"]))
+                         if _ns.get("cpu") else None),
+        "power_mode": (_ns.get("meta") or {}).get("power_mode"),
+        "jetson_clocks": (_ns.get("meta") or {}).get("jetson_clocks"),
+        "throttle_headroom_c": _ns.get("throttle_headroom_c"),
     }
 
 
@@ -2253,6 +2434,8 @@ class H(BaseHTTPRequestHandler):
             self._send_bytes(HTML.encode(), "text/html; charset=utf-8")
         elif p == "/metrics":
             self._send_json(200, gather_metrics())
+        elif p == "/nano":
+            self._send_json(200, TEGRA.snapshot())
         elif p == "/history":
             self._send_json(200, {"messages": history_messages()})
         elif p == "/settings":
@@ -2573,6 +2756,14 @@ class H(BaseHTTPRequestHandler):
                 self._send_json(200, export_dataset(opts))
             except Exception as e:  # noqa: BLE001
                 self._send_json(500, {"ok": False, "error": str(e)})
+        elif p == "/nano/jetson_clocks":
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                payload = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "bad json"}); return
+            self._send_json(200, set_jetson_clocks(bool(payload.get("on"))))
         elif p == "/memory/visual/capture":
             try:
                 rec = VMEM.capture_now(source="manual")
@@ -2679,6 +2870,7 @@ def main():
     AUDIO.start()
     AUDIO_MONITOR.start()
     threading.Thread(target=_vlm_health_poller, daemon=True).start()
+    TEGRA.start()
     VMEM.start()
 
     # wire up the tool registry

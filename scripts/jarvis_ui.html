@@ -1210,6 +1210,9 @@ textarea#text::placeholder { color: var(--dim); }
       <button class=iconbtn id=intelbtn title='Intel panel (conversation, entities, watches)' aria-label='intel panel'>
         <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='3' y='3' width='18' height='18' rx='2'/><path d='M15 3v18'/><path d='M7 8h4M7 12h4'/></svg>
       </button>
+      <button class=iconbtn id=nanobtn title='Nano diagnostics — live GPU / CPU / thermal / power' aria-label='nano diagnostics'>
+        <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='4' y='4' width='16' height='16' rx='2'/><rect x='9' y='9' width='6' height='6'/><path d='M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3'/></svg>
+      </button>
       <button class=iconbtn id=datasetbtn title='Training data — export visual memory as a dataset' aria-label='training data'>
         <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><ellipse cx='12' cy='5' rx='8' ry='3'/><path d='M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5'/><path d='M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6'/></svg>
       </button>
@@ -1281,7 +1284,9 @@ textarea#text::placeholder { color: var(--dim); }
       <div class=sys-grp>
         <div class=sys-h>RESOURCES</div>
         <div class=sys-row id=sys-ram><span class=sl>RAM</span><span class=sv>—</span></div>
+        <div class=sys-row id=sys-gpu><span class=sl>GPU</span><span class=sv>—</span></div>
         <div class=sys-row id=sys-soc><span class=sl>SoC</span><span class=sv>—</span></div>
+        <div class=sys-row id=sys-pwr><span class=sl>PWR</span><span class=sv>—</span></div>
         <div class=sys-row id=sys-fps><span class=sl>FPS</span><span class=sv>—</span></div>
         <div class=sys-row id=sys-up><span class=sl>UP</span><span class=sv>—</span></div>
       </div>
@@ -1495,6 +1500,17 @@ textarea#text::placeholder { color: var(--dim); }
   </div>
   <canvas id=graphcanvas></canvas>
   <div class=graph-hint>drag to pan · click a node to inspect</div>
+</div>
+
+<div class=modal id=nano-modal>
+  <div class=modal-content style="max-width:640px">
+    <h2 style="display:flex;align-items:center;gap:10px">NANO · LIVE DIAGNOSTICS
+      <span id=nano-mode style="font-size:11px;letter-spacing:.06em;color:var(--accent);border:1px solid var(--accent-soft);border-radius:6px;padding:2px 7px"></span>
+      <button class=chip id=nano-turbo style="margin-left:auto;font-size:11px">⚡ Turbo</button>
+    </h2>
+    <div id=nano-body style="font:500 12px/1.6 'Geist Mono',monospace"><div style="color:var(--muted)">Connecting to tegrastats…</div></div>
+    <div style="color:var(--muted);font-size:11px;margin-top:12px">Orin Nano Super · 1024-core Ampere + 6-core A78 · throttles at 85 °C · live from tegrastats + INA3221</div>
+  </div>
 </div>
 
 <div class=modal id=dataset-modal>
@@ -1921,7 +1937,9 @@ function updateSysRail(m) {
   setSys('sys-agent', m.agent_mode_enabled ? 'ok' : 'off', m.agent_mode_enabled ? 'on' : 'off');
   setSys('sys-live', m.live_running ? 'live' : 'off', m.live_running ? 'on' : 'off');
   setSys('sys-ram', m.ram_avail_mb < 400 ? 'bad' : (m.ram_avail_mb < 800 ? 'warn' : 'ok'), m.ram_avail_mb + 'M');
+  if (m.gpu_util != null) setSys('sys-gpu', m.gpu_util > 90 ? 'live' : 'ok', m.gpu_util + '%');
   setSys('sys-soc', m.soc_temp_c > 80 ? 'bad' : (m.soc_temp_c > 65 ? 'warn' : 'ok'), Math.round(m.soc_temp_c) + '°');
+  if (m.power_w != null) setSys('sys-pwr', m.power_w > 14 ? 'warn' : 'ok', m.power_w + 'W');
   setSys('sys-fps', m.cam_fps > 1 ? 'ok' : 'warn', m.cam_fps.toFixed(1));
   setSys('sys-up', 'ok', fmtUp(m.uptime_s || 0));
   setSys('sys-tools', 'ok', m.tool_count);
@@ -3369,6 +3387,63 @@ const shortcutsModal = $('#shortcuts-modal');
 $('#shortcutsbtn').onclick = () => shortcutsModal.classList.add('open');
 shortcutsModal.onclick = (e) => { if (e.target === shortcutsModal) shortcutsModal.classList.remove('open'); };
 
+/* ===== Nano live diagnostics ===== */
+const nanoModal = $('#nano-modal');
+let _nanoTimer = null;
+function nanoBar(label, pct, rgb, right) {
+  pct = Math.max(0, Math.min(100, pct || 0));
+  return `<div style="display:flex;align-items:center;gap:8px;margin:3px 0">
+    <span style="color:var(--muted);width:62px;flex-shrink:0">${label}</span>
+    <div style="flex:1;height:9px;background:var(--surface);border-radius:5px;overflow:hidden;border:1px solid var(--border)">
+      <div style="height:100%;width:${pct}%;background:rgb(${rgb});transition:width .4s"></div></div>
+    <span style="width:74px;text-align:right;font-variant-numeric:tabular-nums">${right != null ? right : pct + '%'}</span>
+  </div>`;
+}
+function renderNano(d) {
+  if (!d || !d.ok) { $('#nano-body').innerHTML = '<div style="color:var(--muted)">tegrastats unavailable on this host.</div>'; return; }
+  const meta = d.meta || {};
+  $('#nano-mode').textContent = (meta.power_mode || '—') + (meta.jetson_clocks ? ' · TURBO' : '');
+  $('#nano-turbo').classList.toggle('active', !!meta.jetson_clocks);
+  const tempRGB = t => t > 80 ? '239,68,68' : (t > 65 ? '245,158,11' : '74,222,128');
+  let h = '';
+  // GPU + EMC
+  h += '<div style="color:var(--accent);letter-spacing:.1em;margin:2px 0 4px">COMPUTE</div>';
+  h += nanoBar('GPU', d.gpu_util, '56,189,248');
+  if (d.emc_util != null) h += nanoBar('EMC', d.emc_util, '168,130,255');
+  // CPU cores
+  h += '<div style="color:var(--accent);letter-spacing:.1em;margin:10px 0 4px">CPU · 6×A78AE</div>';
+  (d.cpu || []).forEach((c, i) => { h += nanoBar('core ' + i, c.off ? 0 : c.load, '193,95,60', c.off ? 'off' : (c.load + '% @' + (c.freq / 1000).toFixed(2) + 'G')); });
+  // Thermals
+  h += '<div style="color:var(--accent);letter-spacing:.1em;margin:10px 0 4px">THERMAL · headroom ' + (d.throttle_headroom_c != null ? d.throttle_headroom_c + '°C' : '—') + '</div>';
+  const temps = d.temps || {};
+  Object.keys(temps).forEach(k => { const t = temps[k]; h += nanoBar(k, (t / 85) * 100, tempRGB(t), t.toFixed(1) + '°C'); });
+  // Power
+  h += '<div style="color:var(--accent);letter-spacing:.1em;margin:10px 0 4px">POWER · ' + (d.power_total_mw ? (d.power_total_mw / 1000).toFixed(2) + ' W now' : '—') + (d.power_avg_mw ? ' · ' + (d.power_avg_mw / 1000).toFixed(2) + ' W avg' : '') + '</div>';
+  const pw = d.power || {};
+  Object.keys(pw).forEach(k => { const r = pw[k]; h += `<div style="display:flex;justify-content:space-between;margin:2px 0"><span style="color:var(--muted)">${k}</span><span style="font-variant-numeric:tabular-nums">${(r.now/1000).toFixed(2)} W <span style="color:var(--muted)">(avg ${(r.avg/1000).toFixed(2)})</span></span></div>`; });
+  // Memory
+  h += '<div style="color:var(--accent);letter-spacing:.1em;margin:10px 0 4px">MEMORY</div>';
+  if (d.ram_total_mb) h += nanoBar('RAM', d.ram_used_mb / d.ram_total_mb * 100, '74,222,128', d.ram_used_mb + '/' + d.ram_total_mb + 'M');
+  if (d.swap_total_mb) h += nanoBar('SWAP', d.swap_used_mb / d.swap_total_mb * 100, '148,163,184', d.swap_used_mb + '/' + d.swap_total_mb + 'M');
+  $('#nano-body').innerHTML = h;
+}
+async function pollNano() {
+  try { renderNano(await (await fetch('/nano')).json()); } catch (e) { }
+}
+function openNano() { nanoModal.classList.add('open'); pollNano(); _nanoTimer = setInterval(pollNano, 1000); }
+function closeNano() { nanoModal.classList.remove('open'); if (_nanoTimer) { clearInterval(_nanoTimer); _nanoTimer = null; } }
+$('#nanobtn') && ($('#nanobtn').onclick = () => nanoModal.classList.contains('open') ? closeNano() : openNano());
+nanoModal.onclick = (e) => { if (e.target === nanoModal) closeNano(); };
+$('#nano-turbo') && ($('#nano-turbo').onclick = async () => {
+  const on = !$('#nano-turbo').classList.contains('active');
+  $('#nano-turbo').disabled = true;
+  try {
+    const j = await (await fetch('/nano/jetson_clocks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ on }) })).json();
+    toast(j.ok ? (on ? 'Turbo ON — clocks locked to max' : 'Turbo OFF — DVFS restored') : ('Turbo failed: ' + (j.error || '?')), j.ok ? 'ok' : 'warn');
+  } catch (e) { toast('Turbo toggle failed', 'warn'); }
+  $('#nano-turbo').disabled = false; pollNano();
+});
+
 /* ===== training-data export ===== */
 const datasetModal = $('#dataset-modal');
 function openDataset() { datasetModal.classList.add('open'); loadDatasets(); }
@@ -3423,6 +3498,7 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === '/') { e.preventDefault(); text.focus(); text.value = '/'; openPalette(''); }
   else if (e.key === 'Escape') {
     if (shortcutsModal.classList.contains('open')) shortcutsModal.classList.remove('open');
+    else if (nanoModal.classList.contains('open')) closeNano();
     else if (datasetModal.classList.contains('open')) closeDataset();
     else if (isStreaming) stopCurrent();
     else if (drawer.classList.contains('open')) closeDrawer();
