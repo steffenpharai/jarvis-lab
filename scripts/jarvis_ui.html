@@ -3425,6 +3425,14 @@ function renderNano(d) {
   h += '<div style="color:var(--accent);letter-spacing:.1em;margin:10px 0 4px">MEMORY</div>';
   if (d.ram_total_mb) h += nanoBar('RAM', d.ram_used_mb / d.ram_total_mb * 100, '74,222,128', d.ram_used_mb + '/' + d.ram_total_mb + 'M');
   if (d.swap_total_mb) h += nanoBar('SWAP', d.swap_used_mb / d.swap_total_mb * 100, '148,163,184', d.swap_used_mb + '/' + d.swap_total_mb + 'M');
+  if (meta.disk_pct != null) h += nanoBar('DISK', meta.disk_pct, '234,179,8', meta.disk_used_gb + '/' + meta.disk_total_gb + 'G');
+  // Network
+  if (d.net_rx_kbs != null) {
+    h += '<div style="color:var(--accent);letter-spacing:.1em;margin:10px 0 4px">NETWORK</div>';
+    const fmt = k => k >= 1024 ? (k/1024).toFixed(1)+' MB/s' : k.toFixed(0)+' KB/s';
+    h += `<div style="display:flex;justify-content:space-between;margin:2px 0"><span style="color:var(--muted)">↓ rx</span><span style="font-variant-numeric:tabular-nums">${fmt(d.net_rx_kbs)}</span></div>`;
+    h += `<div style="display:flex;justify-content:space-between;margin:2px 0"><span style="color:var(--muted)">↑ tx</span><span style="font-variant-numeric:tabular-nums">${fmt(d.net_tx_kbs)}</span></div>`;
+  }
   $('#nano-body').innerHTML = h;
 }
 async function pollNano() {

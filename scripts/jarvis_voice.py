@@ -1830,6 +1830,18 @@ class TegraStats:
         self._proc = None
         self._thread = None
         self._stop = threading.Event()
+        self._last_net = None  # (t, rx_bytes, tx_bytes) for throughput delta
+
+    @staticmethod
+    def _net_bytes():
+        rx = tx = 0
+        for line in Path("/proc/net/dev").read_text().splitlines()[2:]:
+            name, _, rest = line.partition(":")
+            if name.strip() == "lo" or not rest.strip():
+                continue
+            f = rest.split()
+            rx += int(f[0]); tx += int(f[8])
+        return rx, tx
 
     def start(self):
         if self._thread is not None:
@@ -1856,6 +1868,17 @@ class TegraStats:
             except Exception:  # noqa: BLE001 — never let a bad line kill telemetry
                 continue
             if parsed:
+                try:  # network throughput (delta over the ~1s tegrastats tick)
+                    rx, tx = self._net_bytes()
+                    tnow = time.time()
+                    if self._last_net:
+                        dt = tnow - self._last_net[0]
+                        if dt > 0:
+                            parsed["net_rx_kbs"] = round((rx - self._last_net[1]) / dt / 1024, 1)
+                            parsed["net_tx_kbs"] = round((tx - self._last_net[2]) / dt / 1024, 1)
+                    self._last_net = (tnow, rx, tx)
+                except Exception:  # noqa: BLE001
+                    pass
                 with self.lock:
                     self.data = parsed
                     self.ok = True
@@ -1922,6 +1945,13 @@ class TegraStats:
             gov = Path("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
             if gov.exists():
                 meta["governor"] = gov.read_text().strip()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            du = shutil.disk_usage("/")
+            meta["disk_total_gb"] = round(du.total / 1e9, 1)
+            meta["disk_used_gb"] = round(du.used / 1e9, 1)
+            meta["disk_pct"] = round(du.used / du.total * 100)
         except Exception:  # noqa: BLE001
             pass
         try:  # jetson_clocks pins min freq up to max (it doesn't rename the governor)
