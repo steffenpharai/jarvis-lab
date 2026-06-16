@@ -125,9 +125,12 @@
   position: fixed; left: 12px; top: 50px; bottom: calc(var(--dock-h, 150px) + 28px);
   width: 198px; z-index: 33; display: flex; flex-direction: column; gap: 12px;
   padding: 12px 12px 10px; overflow-y: auto;
-  background: var(--glass-fill); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur);
+  /* near-opaque dark scrim (not the 55% glass-fill) so the rail text never
+     washes out over a bright/gray camera frame; keep the blur for the look */
+  background: rgba(11, 12, 15, 0.86); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur);
   border: 1px solid var(--border-strong); border-top-color: var(--glass-edge); border-radius: var(--r-lg);
   box-shadow: 0 24px 70px -24px rgba(0,0,0,0.7);
+  text-shadow: 0 1px 2px rgba(0,0,0,0.7);  /* inherited by all rail text */
 }
 .sysrail::-webkit-scrollbar { width: 0; }
 .sys-ops { display: flex; align-items: center; gap: 7px; font: 600 11px/1.4 'Geist Mono', monospace;
