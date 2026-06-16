@@ -1,20 +1,19 @@
 [Unit]
 Description=Jarvis dashboard + voice loop + live mode + wake word
 After=jarvis-vlm.service network-online.target sound.target
-# Wants (not Requires): the dashboard depends on the VLM at boot (After= + the
-# /health ExecStartPre gate) but must SURVIVE a VLM restart — the self-healing
-# memory watchdog refreshes jarvis-vlm under pressure, and a hard Requires= would
-# cascade-restart the whole dashboard. jarvis_voice degrades gracefully when the
-# VLM is down (_VLM_UP flag).
-Wants=jarvis-vlm.service network-online.target
+# NOT Requires/Wants jarvis-vlm: the dashboard boots STANDALONE so the box comes
+# up cool in ECO (the VLM is disabled from auto-start; it's started on the first
+# request or "wake up"). jarvis_voice degrades gracefully when the VLM is down
+# (_VLM_UP flag → ECO state). After= keeps boot ordering if the VLM is ever up.
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=zip
 Group=zip
 WorkingDirectory=/home/zip/jarvis-lab
-# Wait for VLM /health to respond before starting (max 60s)
-ExecStartPre=/bin/sh -c 'for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1'
+# No VLM-health gate: in ECO the VLM is intentionally down at boot. The dashboard
+# serves immediately and reflects ECO; the first request/​wake starts the VLM.
 ExecStart=/usr/bin/python3 /home/zip/jarvis-lab/scripts/jarvis_voice.py
 Restart=on-failure
 RestartSec=3

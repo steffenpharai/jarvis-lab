@@ -1123,6 +1123,7 @@ textarea#text::placeholder { color: var(--dim); }
   font: 600 11px/1 'Geist Mono', monospace; letter-spacing: .08em; color: var(--cyan); }
 .percbanner.on { display: inline-flex; }
 .percbanner.warn { border-color: var(--warn); box-shadow: 0 0 22px rgba(245,158,11,0.22); color: var(--warn); }
+.percbanner.ecomode { border-color: var(--ok); box-shadow: 0 0 22px rgba(74,222,128,0.18); color: var(--ok); }
 .percbanner .perc-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; animation: pulse 1.3s ease-in-out infinite; flex-shrink: 0; }
 .percbanner .perc-exit { background: transparent; border: 1px solid currentColor; color: currentColor; padding: 3px 9px; border-radius: var(--r-pill); font: 600 10px/1 'Geist Mono', monospace; cursor: pointer; }
 .percbanner .perc-exit:hover { background: var(--cyan); color: #04121c; }
@@ -1301,6 +1302,7 @@ textarea#text::placeholder { color: var(--dim); }
       <div class=scansweep aria-hidden=true></div>
       <svg class=tracks id=tracks viewBox='0 0 1000 1000' preserveAspectRatio=none></svg>
       <div class=percbanner id=percbanner><span class=perc-dot></span><span id=perc-txt></span><button class=perc-exit id=perc-exit>Return to VLM</button></div>
+      <div class="percbanner ecomode" id=ecobanner><span class=perc-dot></span><span id=eco-txt></span><button class=perc-exit id=eco-wake>Wake</button></div>
       <div class=dettick id=dettick></div>
       <div class='hud-pill hud-tl livepill idle' id=livepill><span class=dot></span> idle</div>
       <div class='hud-pill hud-tr' id=hudtr><span>0.0 fps</span><span class=hud-sep>·</span><span class='hud-val'>—</span></div>
@@ -1790,7 +1792,7 @@ function parseObjs(s) {
 let _lastTickCap = 0;
 async function tickDetections() {
   const tick = $('#dettick'); if (!tick) return;
-  if (window._perceptionMode) { tick.classList.remove('on'); return; }  // OWL boxes take over
+  if (window._perceptionMode || window._ecoMode) { tick.classList.remove('on'); return; }  // OWL boxes / eco take over
   try {
     const items = (await (await fetch('/memory/visual/recent')).json()).items || [];
     const now = Date.now() / 1000;
@@ -1863,6 +1865,35 @@ function applyPerception(m) {
 }
 $('#perc-exit') && ($('#perc-exit').onclick = () => setPerception(false));
 window.nanoTogglePerc = () => setPerception(!window._perceptionMode);
+
+/* ===== power management: FULL <-> ECO (cool, voice-wakeable) + OFF ===== */
+async function setPower(action) {
+  if (action === 'shutdown' && !confirm('Shut down the Jetson?\n\nThe dashboard will go offline and you will need the PHYSICAL power button on the device to turn it back on — voice and the app cannot wake it from off.')) return;
+  if (action === 'reboot' && !confirm('Reboot the Jetson? It will be offline for ~1 minute.')) return;
+  const msg = { eco: 'Entering eco mode — VLM stopping, staying cool…', wake: 'Waking up — loading the VLM (~20s)…', shutdown: 'Shutting down…', reboot: 'Rebooting…' }[action];
+  toast(msg || action, action === 'shutdown' ? 'warn' : 'ok');
+  try { await fetch('/power', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) }); } catch (e) { }
+}
+function applyPower(m) {
+  const b = $('#ecobanner'); if (!b) return;
+  const st = m.power_state, tr = m.power_transition || '';
+  window._ecoMode = (st === 'eco');
+  // reflect on the NANO panel power buttons if open
+  const pb = $('#nano-power-state'); if (pb) pb.textContent = (tr || st || 'full').toUpperCase();
+  if (tr === 'waking' || tr === 'entering eco' || tr === 'shutting down' || tr === 'rebooting') {
+    b.className = 'percbanner ecomode warn on';
+    $('#eco-txt').textContent = tr.toUpperCase() + '…';
+    $('#eco-wake').style.display = 'none';
+  } else if (st === 'eco') {
+    b.className = 'percbanner ecomode on';
+    $('#eco-txt').textContent = "ECO · VLM asleep — say “wake up” or";
+    $('#eco-wake').style.display = '';
+  } else {
+    b.className = 'percbanner ecomode';
+  }
+}
+$('#eco-wake') && ($('#eco-wake').onclick = () => setPower('wake'));
+window.powerAction = (a) => setPower(a);
 function entityListView() {
   $('#entity-detail').classList.add('hidden');
   $('#entities-list').classList.remove('hidden');
@@ -2146,6 +2177,7 @@ async function tickMetrics() {
     const tcb = document.getElementById('tools-count'); if (tcb) tcb.textContent = m.tool_count || 0;
     updateSysRail(m);
     applyPerception(m);
+    applyPower(m);
     // live-refresh the activity ledger while it's the open pane
     const intelO = document.getElementById('intel');
     if (intelO && intelO.classList.contains('open')) {
@@ -3628,6 +3660,16 @@ function renderNano(d) {
   $('#nano-turbo').classList.toggle('active', !!meta.jetson_clocks);
   const tempRGB = t => t > 80 ? '239,68,68' : (t > 65 ? '245,158,11' : '74,222,128');
   let h = '';
+  // power control: FULL <-> ECO (cool, voice-wakeable) + reboot/shutdown
+  const eco = window._ecoMode;
+  h += `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin:0 0 8px;padding-bottom:8px;border-bottom:1px solid var(--border)">
+    <span style="color:var(--muted)">POWER · <b id=nano-power-state style="color:${eco ? 'var(--ok)' : 'var(--text)'}">${eco ? 'ECO' : 'FULL'}</b></span>
+    <span style="display:flex;gap:6px">
+      <button class=chip onclick="window.powerAction('${eco ? 'wake' : 'eco'}')" style="font-size:11px">${eco ? '☀ Wake' : '🌙 Eco'}</button>
+      <button class=chip onclick="window.powerAction('reboot')" style="font-size:11px">⟳ Reboot</button>
+      <button class=chip onclick="window.powerAction('shutdown')" style="font-size:11px;border-color:rgba(239,68,68,0.4);color:var(--bad)">⏻ Off</button>
+    </span>
+  </div>`;
   // self-healing watchdog status (auto-refreshes the VLM when RAM collapses)
   const ar = d.autorefresh || {};
   h += `<div style="display:flex;justify-content:space-between;align-items:center;margin:0 0 8px;padding-bottom:8px;border-bottom:1px solid var(--border)">

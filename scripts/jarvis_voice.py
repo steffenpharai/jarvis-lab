@@ -1355,6 +1355,41 @@ def run_turn(ctx: TurnCtx, payload: dict) -> None:
         else:
             raise ValueError(f"unknown kind: {kind}")
 
+        # --- power / wake voice commands: text-matched on the transcript so they
+        #     work even in ECO (VLM stopped). Skip the camera + VLM entirely. ---
+        if kind in ("talk", "text"):
+            pa = _route_power_command(question)
+            if pa:
+                reply = _power_reply(pa)
+                ctx.emit({"phase": "thinking"})
+                ctx.emit({"phase": "token", "delta": reply})
+                ptts = StreamingTTS(tid, lambda seg: ctx.emit({"phase": "audio_segment", **seg}))
+                ptts.add_delta(reply)
+                ctx.emit({"phase": "speaking"})
+                ptts.finish()
+                ptts.done_evt.wait(timeout=20)
+                try:
+                    synthesize(reply, work / "reply.wav")
+                except Exception:  # noqa: BLE001
+                    pass
+                set_power(pa)   # eco/wake run async; shutdown/reboot fire after a grace
+                history_append("user", question)
+                history_append("assistant", reply)
+                ctx.result = {"turn_id": tid, "kind": kind, "question": question,
+                              "transcription": transcription, "reply": reply,
+                              "cancelled": False, "timings": timings,
+                              "usage": {"power_action": pa},
+                              "audio_url": f"/audio/{tid}.wav", "ts": time.time()}
+                try:
+                    MEMORY.record(ctx.result)
+                except Exception:  # noqa: BLE001
+                    pass
+                ctx.emit({"phase": "done", "result": ctx.result})
+                return   # finally: sets ctx.done
+        # --- in ECO, any other request auto-wakes first (VLM reloads ~20s) ---
+        if POWER["state"] == "eco":
+            wake_if_eco(ctx.emit)
+
         ctx.emit({"phase": "capturing", "transcription": transcription,
                   "question": question, "crop": crop})
         cap = capture_frame_for_vlm(work / "frame.jpg", crop=crop,
@@ -1879,8 +1914,18 @@ def _vlm_memory_watchdog() -> None:
     while True:
         time.sleep(20)
         try:
-            if not cfg["enabled"] or PERCEPTION["on"]:
-                cfg["low_streak"] = 0   # never refresh the VLM while OWL owns the GPU
+            # auto-eco: drop to cool/low-power after a long idle (any request wakes it)
+            if (POWER["state"] == "full" and not POWER["transition"]
+                    and not PERCEPTION["on"]
+                    and POWER["auto_eco_idle_s"]
+                    and time.time() - LAST_USER_ACTIVITY["ts"] > POWER["auto_eco_idle_s"]):
+                print("[power] idle — auto-entering eco", flush=True)
+                _power_transition("eco")
+                continue
+            # self-heal is for FULL only; eco/perception intentionally stop the VLM
+            if (not cfg["enabled"] or PERCEPTION["on"]
+                    or POWER["state"] != "full" or POWER["transition"]):
+                cfg["low_streak"] = 0
                 continue
             avail = _mem_avail_mb()
             if avail >= cfg["min_avail_mb"]:
@@ -2186,6 +2231,115 @@ def set_perception(on: bool) -> dict:
     return {"ok": True, "on": on, "transition": "switching"}
 
 
+# ---- Power management: FULL <-> ECO (cool, voice-wakeable) + OFF/REBOOT ------
+# FULL  = MAXN_SUPER + VLM up + captioner on (~20W/70C).
+# ECO   = 7W + VLM STOPPED + captioner paused, but dashboard + mic + wake word
+#         stay alive so "Hey Jarvis, wake up" works (~7-10W, cool).
+# OFF   = poweroff — only the physical button brings it back (no voice/network).
+# The 8GB box can't run VLM+OWL; eco/perception/full are one state machine.
+POWER = {"state": "full", "transition": "", "ts": 0.0, "auto_eco_idle_s": 900}
+
+
+def _power_transition(target: str) -> None:
+    # NOTE: the VLM is ~all of the power/heat (stopping it drops ~20W → ~7.6W and
+    # cools the SoC), so eco = stop the VLM. We do NOT switch nvpmodel: the 7W
+    # mode requires a REBOOT on this board, so it isn't a runtime lever. nvpmodel
+    # stays MAXN_SUPER; ⚡Turbo (jetson_clocks) is the separate high-usage boost.
+    try:
+        if target == "eco":
+            POWER["transition"] = "entering eco"
+            POWER["state"] = "eco"          # set first so the watchdog stands down
+            VMEM.set_enabled(False)
+            subprocess.run(["sudo", "-n", "systemctl", "stop", "jarvis-vlm"],
+                           check=False, capture_output=True, timeout=30)
+            _VLM_UP["flag"] = False
+            POWER["transition"] = ""
+        elif target == "full":
+            POWER["transition"] = "waking"
+            LAST_USER_ACTIVITY["ts"] = time.time()   # reset idle timer up front
+            subprocess.run(["sudo", "-n", "systemctl", "start", "jarvis-vlm"],
+                           check=False, capture_output=True, timeout=30)
+            deadline = time.time() + 90
+            while time.time() < deadline:
+                try:
+                    if httpx.get(VLM_HEALTH, timeout=httpx.Timeout(2, 2, 2, 2)).status_code == 200:
+                        break
+                except Exception:  # noqa: BLE001
+                    pass
+                time.sleep(3)
+            VMEM.set_enabled(True)
+            POWER["state"] = "full"
+            POWER["transition"] = ""
+            LAST_USER_ACTIVITY["ts"] = time.time()   # fresh idle window so auto-eco won't re-fire
+    except Exception as e:  # noqa: BLE001
+        POWER["transition"] = "error"
+        print(f"[power] transition error: {e}", flush=True)
+
+
+def set_power(action: str) -> dict:
+    """action: eco | wake | shutdown | reboot."""
+    POWER["ts"] = time.time()
+    if action in ("shutdown", "reboot"):
+        verb = "poweroff" if action == "shutdown" else "reboot"
+        POWER["transition"] = "shutting down" if action == "shutdown" else "rebooting"
+        # fire after a short grace so the HTTP response reaches the client first
+        threading.Timer(1.5, lambda: subprocess.run(
+            ["sudo", "-n", "systemctl", verb], check=False)).start()
+        return {"ok": True, "action": action, "transition": POWER["transition"]}
+    if action in ("eco", "wake"):
+        target = "eco" if action == "eco" else "full"
+        if POWER["state"] == target and not POWER["transition"]:
+            return {"ok": True, "state": target, "noop": True}
+        threading.Thread(target=_power_transition, args=(target,), daemon=True).start()
+        return {"ok": True, "state": POWER["state"],
+                "transition": "entering eco" if target == "eco" else "waking"}
+    return {"ok": False, "error": "unknown action"}
+
+
+def wake_if_eco(emit=None) -> bool:
+    """If asleep, wake to FULL and block until the VLM is healthy. Returns True
+    if a wake happened (caller should treat the turn as resuming after wake)."""
+    if POWER["state"] != "eco":
+        return False
+    if emit:
+        emit({"phase": "waking"})
+    _power_transition("full")   # synchronous: stops returning until VLM is up
+    return True
+
+
+# Voice power commands are text-matched on the STT transcript (NOT the VLM) so
+# they work in ECO where the VLM is stopped. Short phrases only — a long sentence
+# is treated as a real question, not a command.
+_POWER_PHRASES = [
+    ("wake", ("wake up", "wakey", "wake jarvis", "good morning", "full power",
+              "boost", "come back", "are you there", "you awake")),
+    ("eco", ("eco mode", "power save", "power saver", "go to sleep", "sleep mode",
+             "go eco", "stand down", "cool down", "low power", "take a nap", "go to eco")),
+    ("shutdown", ("shut down", "shutdown", "power off", "power down",
+                  "turn yourself off", "turn off jarvis")),
+    ("reboot", ("reboot", "restart yourself", "restart the system", "reboot yourself")),
+]
+
+
+def _route_power_command(text: str) -> str | None:
+    t = (text or "").lower().strip().strip(".!?,")
+    if not t or len(t) > 60:   # long input = a real question, not a power command
+        return None
+    for action, phrases in _POWER_PHRASES:
+        if any(ph in t for ph in phrases):
+            return action
+    return None
+
+
+def _power_reply(action: str) -> str:
+    return {
+        "wake": "Waking up, sir. One moment while I come fully online.",
+        "eco": "Entering eco mode, sir. I'll keep listening — say wake up when you need me.",
+        "shutdown": "Powering down, sir. You'll need the physical button to bring me back.",
+        "reboot": "Rebooting now, sir. Back in a moment.",
+    }.get(action, "")
+
+
 def gather_metrics() -> dict:
     _ns = TEGRA.snapshot()
     m = read_meminfo()
@@ -2228,6 +2382,8 @@ def gather_metrics() -> dict:
         "vlm_refreshes": VLM_AUTOREFRESH["refreshes"],
         "perception_mode": PERCEPTION["on"],
         "perception_transition": PERCEPTION["transition"],
+        "power_state": POWER["state"],
+        "power_transition": POWER["transition"],
     }
 
 
@@ -2984,6 +3140,14 @@ class H(BaseHTTPRequestHandler):
             except json.JSONDecodeError:
                 self._send_json(400, {"error": "bad json"}); return
             self._send_json(200, set_perception(bool(payload.get("on"))))
+        elif p == "/power":
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                payload = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "bad json"}); return
+            self._send_json(200, set_power((payload.get("action") or "").strip()))
         elif p == "/nano/autorefresh":
             length = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(length) if length else b"{}"
@@ -3154,6 +3318,20 @@ def main():
     ))
     jarvis_tools.TOOLS.start_reminder_loop(MEMORY)
     print(f"jarvis: {len(jarvis_tools.TOOLS.catalog())} tools registered", flush=True)
+
+    # Boot-to-eco: if the VLM service isn't running at startup (it's disabled from
+    # auto-start), we're cool/idle until the first request or "wake up". Use the
+    # service state, not a health ping (which races with llama-server warmup).
+    try:
+        _vlm_running = subprocess.run(
+            ["systemctl", "is-active", "jarvis-vlm"],
+            capture_output=True, text=True, timeout=5).stdout.strip() == "active"
+    except Exception:  # noqa: BLE001
+        _vlm_running = False
+    if not _vlm_running:
+        POWER["state"] = "eco"
+        VMEM.set_enabled(False)
+        print("jarvis: booted in ECO (VLM stopped) — wake on request", flush=True)
 
     print(f"jarvis listening on http://{LISTEN_HOST}:{LISTEN_PORT}/", flush=True)
     JarvisServer((LISTEN_HOST, LISTEN_PORT), H).serve_forever()
