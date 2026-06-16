@@ -24,6 +24,7 @@ import contextlib
 import json
 import os
 import queue
+import io
 import re
 import shutil
 import sqlite3
@@ -38,6 +39,7 @@ from pathlib import Path
 
 import httpx              # OpenAI / Anthropic SDK pattern: streaming HTTP
 import numpy as np        # audio buffer math + pHash
+from PIL import Image     # in-process JPEG decode (fork-free under the 8GB ceiling)
 
 import jarvis_tools       # tool catalog (registry + handlers)
 
@@ -576,21 +578,21 @@ MEMORY = Memory(DB_PATH)
 # ----- camera streamer + pHash ------------------------------------------------
 def phash_frame(jpg_bytes: bytes) -> int:
     """8x8 perceptual hash → 64-bit int. Tolerates small lighting/exposure
-    changes; flips bits hard on real scene change."""
-    proc = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error",
-         "-f", "mjpeg", "-i", "-",
-         "-vf", "format=gray,scale=8:8:flags=area",
-         "-frames:v", "1", "-f", "rawvideo", "-"],
-        input=jpg_bytes, capture_output=True, timeout=4,
-    )
-    pix = np.frombuffer(proc.stdout, dtype=np.uint8)
+    changes; flips bits hard on real scene change. Decoded IN-PROCESS via PIL:
+    on the 8GB box, free RAM routinely sits <100 MB and forking this large
+    process for an ffmpeg subprocess stalls for seconds (it was timing out and
+    breaking every interactive turn). PIL decode is fork-free and ~1 ms."""
+    try:
+        im = Image.open(io.BytesIO(jpg_bytes)).convert("L").resize(
+            (8, 8), Image.BILINEAR)
+    except Exception:  # noqa: BLE001 — corrupt/partial frame → no hash
+        return 0
+    pix = np.asarray(im, dtype=np.uint8).flatten()
     if pix.size != 64:
         return 0
     mean = pix.mean()
-    bits = (pix > mean).astype(np.uint64)
     h = 0
-    for b in bits:
+    for b in (pix > mean).astype(np.uint8):
         h = (h << 1) | int(b)
     return h
 
@@ -726,22 +728,20 @@ def capture_frame_for_vlm(out_jpg: Path, crop: tuple | None = None,
             reused = True
             scene_changed = False
     if not reused:
-        vf_parts = []
+        # In-process crop+scale (PIL, fork-free) — see phash_frame: forking this
+        # large process for ffmpeg stalls under the 8GB memory ceiling. Crop is
+        # against the real decoded size (more correct than CAM_W/H constants).
+        im = Image.open(io.BytesIO(raw)).convert("RGB")
         if crop is not None:
             nx, ny, nw, nh = crop
-            cx = max(0, int(nx * CAM_W))
-            cy = max(0, int(ny * CAM_H))
-            cw = max(64, min(CAM_W - cx, int(nw * CAM_W)))
-            ch = max(64, min(CAM_H - cy, int(nh * CAM_H)))
-            vf_parts.append(f"crop={cw}:{ch}:{cx}:{cy}")
-        vf_parts.append(f"scale={VLM_W}:{VLM_H}:flags=lanczos")
-        subprocess.run(
-            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-             "-f", "mjpeg", "-i", "-",
-             "-vf", ",".join(vf_parts),
-             "-frames:v", "1", "-q:v", "4", str(out_jpg)],
-            input=raw, check=True, capture_output=True, timeout=10,
-        )
+            W, H = im.size
+            cx = max(0, int(nx * W))
+            cy = max(0, int(ny * H))
+            cw = max(64, min(W - cx, int(nw * W)))
+            ch = max(64, min(H - cy, int(nh * H)))
+            im = im.crop((cx, cy, cx + cw, cy + ch))
+        im.resize((VLM_W, VLM_H), Image.LANCZOS).save(
+            str(out_jpg), "JPEG", quality=88)
         with _FRAME_CACHE_LOCK:
             if prev_hash is None:
                 scene_changed = True
@@ -1121,6 +1121,11 @@ def history_clear() -> None:
 
 
 # ----- streaming VLM (httpx) --------------------------------------------------
+# Rolling snapshot of the last interactive VLM inference (tok/s, TTFT, prefill).
+# Surfaced in /metrics + /nano so the HUD proves we're driving the GPU hard.
+_VLM_PERF: dict = {}
+
+
 def stream_vlm(question: str, frame_jpg: Path,
                cancel: threading.Event, on_token,
                include_history: bool = True,
@@ -1149,10 +1154,17 @@ def stream_vlm(question: str, frame_jpg: Path,
         "messages": msgs,
         "max_tokens": max_t,
         "temperature": temp,
+        # KV-prefix reuse: cache the shared system+history prefix across turns so
+        # llama.cpp only prefills the new tokens (frontier on-device latency win).
+        "cache_prompt": True,
+        "timings_per_token": True,
+        "stream_options": {"include_usage": True},
     }
     full: list[str] = []
     usage: dict = {}
     stalled = False
+    req_start = None
+    first_tok_at = None
     timeout = httpx.Timeout(
         connect=connect_timeout_s, read=read_timeout_s,
         write=connect_timeout_s, pool=connect_timeout_s,
@@ -1161,6 +1173,7 @@ def stream_vlm(question: str, frame_jpg: Path,
     # serialize GPU inference; background callers skip when busy (priority=False)
     if not jarvis_tools.VLM_BUSY.acquire(blocking=priority):
         return "", {"skipped": True}
+    req_start = time.monotonic()
     try:
         with httpx.stream(
             "POST", VLM_URL, json=body, timeout=timeout,
@@ -1189,11 +1202,18 @@ def stream_vlm(question: str, frame_jpg: Path,
                     continue
                 if obj.get("usage"):
                     usage = obj["usage"]
+                if obj.get("timings"):
+                    usage["timings"] = obj["timings"]
                 delta = obj.get("choices", [{}])[0].get("delta", {}).get("content")
                 if delta is None:
                     continue
+                if first_tok_at is None:
+                    first_tok_at = time.monotonic()
                 full.append(delta)
-                on_token(delta)
+                try:
+                    on_token(delta)
+                except Exception:  # noqa: BLE001
+                    pass  # a TTS/consumer failure must never abort the VLM stream
     except (httpx.TimeoutException, httpx.RemoteProtocolError,
             httpx.NetworkError, httpx.HTTPStatusError):
         stalled = True
@@ -1201,6 +1221,32 @@ def stream_vlm(question: str, frame_jpg: Path,
         jarvis_tools.VLM_BUSY.release()
     if stalled:
         usage["stalled"] = True
+    # record interactive inference perf for the diagnostics HUD (frontier proof)
+    if priority and not usage.get("skipped"):
+        tm = usage.get("timings") or {}
+        perf: dict = {}
+        # tokens generated: prefer server count, else the number of streamed deltas
+        gen_n = (tm.get("predicted_n") or usage.get("completion_tokens")
+                 or len(full))
+        if tm.get("predicted_per_second"):
+            perf["tok_s"] = round(tm["predicted_per_second"], 1)
+        elif gen_n and first_tok_at:                   # robust wall-clock fallback
+            dt = time.monotonic() - first_tok_at
+            if dt > 0:
+                perf["tok_s"] = round(gen_n / dt, 1)
+        if first_tok_at and req_start:
+            perf["ttft_ms"] = round((first_tok_at - req_start) * 1000)
+        if tm.get("prompt_ms"):
+            perf["prefill_ms"] = round(tm["prompt_ms"])
+        if tm.get("prompt_n") is not None:
+            perf["prompt_n"] = tm["prompt_n"]          # tokens actually prefilled
+        if tm.get("cache_n") is not None:
+            perf["cache_n"] = tm["cache_n"]            # KV-cache prefix reused
+        perf["prompt_tokens"] = usage.get("prompt_tokens")
+        perf["completion_tokens"] = gen_n
+        perf["ts"] = time.time()
+        if perf.get("tok_s"):
+            _VLM_PERF.update(perf)
     return "".join(full).strip(), usage
 
 
@@ -1634,14 +1680,10 @@ class VisualMemory:
         ph = phash_frame(raw)
         fname = uuid.uuid4().hex + ".jpg"
         fpath = VMEM_DIR / fname
-        # 512x384 enhanced-ish capture for legible captions
-        subprocess.run(
-            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-             "-f", "mjpeg", "-i", "-",
-             "-vf", f"scale={VLM_W}:{VLM_H}:flags=lanczos", "-frames:v", "1",
-             "-q:v", "4", str(fpath)],
-            input=raw, check=True, capture_output=True, timeout=10,
-        )
+        # 512x384 capture for legible captions — in-process (PIL), fork-free
+        # (forking under the 8GB ceiling stalls; see phash_frame).
+        Image.open(io.BytesIO(raw)).convert("RGB").resize(
+            (VLM_W, VLM_H), Image.LANCZOS).save(str(fpath), "JPEG", quality=88)
         cancel = threading.Event()
         text, _u = stream_vlm(_VMEM_CAPTION_PROMPT, fpath, cancel,
                               lambda d: None, include_history=False,
@@ -2046,6 +2088,8 @@ def gather_metrics() -> dict:
         "power_mode": (_ns.get("meta") or {}).get("power_mode"),
         "jetson_clocks": (_ns.get("meta") or {}).get("jetson_clocks"),
         "throttle_headroom_c": _ns.get("throttle_headroom_c"),
+        "vlm_tok_s": _VLM_PERF.get("tok_s"),
+        "vlm_ttft_ms": _VLM_PERF.get("ttft_ms"),
     }
 
 
@@ -2465,7 +2509,9 @@ class H(BaseHTTPRequestHandler):
         elif p == "/metrics":
             self._send_json(200, gather_metrics())
         elif p == "/nano":
-            self._send_json(200, TEGRA.snapshot())
+            _snap = TEGRA.snapshot()
+            _snap["vlm"] = dict(_VLM_PERF)
+            self._send_json(200, _snap)
         elif p == "/history":
             self._send_json(200, {"messages": history_messages()})
         elif p == "/settings":

@@ -1928,7 +1928,7 @@ function pushSpark(m) {
 }
 function updateSysRail(m) {
   pushSpark(m);
-  setSys('sys-vlm', m.vlm_up ? 'ok' : 'bad', m.vlm_up ? 'online' : 'down');
+  setSys('sys-vlm', m.vlm_up ? 'ok' : 'bad', m.vlm_up ? (m.vlm_tok_s ? m.vlm_tok_s + ' tk/s' : 'online') : 'down');
   setSys('sys-cam', m.cam_fps > 1 ? 'ok' : 'warn', m.cam_fps ? Math.round(m.cam_fps) + 'fps' : '—');
   setSys('sys-mic', m.whisper_ok ? 'ok' : 'off', m.whisper_ok ? 'ready' : '—');
   setSys('sys-tts', m.piper_ok ? 'ok' : 'off', m.piper_ok ? 'ready' : '—');
@@ -3406,8 +3406,20 @@ function renderNano(d) {
   $('#nano-turbo').classList.toggle('active', !!meta.jetson_clocks);
   const tempRGB = t => t > 80 ? '239,68,68' : (t > 65 ? '245,158,11' : '74,222,128');
   let h = '';
+  // VLM inference perf (the frontier headline — proves the GPU is working hard)
+  const v = d.vlm || {};
+  if (v.tok_s) {
+    h += '<div style="color:var(--accent);letter-spacing:.1em;margin:2px 0 4px">INFERENCE · qwen2.5-vl-3b</div>';
+    const cell = (k, val) => `<span style="color:var(--muted)">${k}</span> <b style="font-variant-numeric:tabular-nums">${val}</b>`;
+    h += '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:4px">' +
+      cell('gen', v.tok_s + ' tok/s') +
+      (v.ttft_ms != null ? cell('ttft', v.ttft_ms + ' ms') : '') +
+      (v.prefill_ms != null ? cell('prefill', v.prefill_ms + ' ms') : '') +
+      (v.prompt_n != null ? cell('prefilled', v.prompt_n + ' tok') : '') +
+      '</div>';
+  }
   // GPU + EMC
-  h += '<div style="color:var(--accent);letter-spacing:.1em;margin:2px 0 4px">COMPUTE</div>';
+  h += '<div style="color:var(--accent);letter-spacing:.1em;margin:8px 0 4px">COMPUTE</div>';
   h += nanoBar('GPU', d.gpu_util, '56,189,248');
   if (d.emc_util != null) h += nanoBar('EMC', d.emc_util, '168,130,255');
   // CPU cores
