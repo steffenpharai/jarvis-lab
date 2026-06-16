@@ -3,6 +3,13 @@
 Pushed the on-device frontier further and hardened the 8 GB engineering.
 Highlights (newest first):
 
+- **Orb polish — readable captions + eco visibility.** The "tap to talk" hint and
+  Jarvis's spoken-reply caption now sit on a dark blurred plate (were unreadable
+  dim text straight over the camera feed); the hint also brightened + dropped clear
+  of the bigger orb. And eco mode no longer crushes the orb to near-dormant — the
+  eco "energy" floor went 0.18 → 0.42 so it stays plainly visible (still reads as
+  eco via its slower breath/rotation). NB: the neural thinking storm only erupts
+  during real reasoning, which is paused in eco — wake to see it fire.
 - **Companion orb — neural "thinking" cloud (synapses firing like a brain).**
   When Jarvis reasons, you now see it think: a brain-like shell of 240 neurons
   wired by 444 k-nearest-neighbour **synapses** that ignite, with **signal sparks**

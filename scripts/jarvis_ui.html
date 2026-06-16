@@ -1080,18 +1080,29 @@ textarea#text::placeholder { color: var(--dim); }
 }
 .sayuser.show { opacity: 0.92; }
 .sayjarvis {
-  font: 400 clamp(17px, 2.1vw, 26px)/1.45 'Geist', sans-serif; color: var(--text);
-  text-shadow: 0 2px 12px rgba(0,0,0,0.92), 0 0 2px #000;
+  display: inline-block; font: 400 clamp(17px, 2.1vw, 26px)/1.45 'Geist', sans-serif; color: var(--text);
+  text-shadow: 0 1px 6px rgba(0,0,0,0.7);
   opacity: 0; transition: opacity .3s var(--ease-out); max-height: 32vh; overflow: hidden;
+  /* legible plate over the camera feed */
+  background: rgba(8,11,16,0.58); padding: 10px 18px; border-radius: 16px;
+  border: 1px solid rgba(255,255,255,0.07);
+  -webkit-backdrop-filter: blur(10px) saturate(1.1); backdrop-filter: blur(10px) saturate(1.1);
+  box-shadow: 0 10px 30px -12px rgba(0,0,0,0.75);
 }
+.sayjarvis:empty { display: none; }
 .sayjarvis.show { opacity: 1; }
 .talkhint {
-  position: fixed; left: 50%; transform: translateX(-50%); top: 57%;
-  font: 500 11px/1 'Geist Mono', monospace; letter-spacing: .12em; text-transform: uppercase;
-  color: var(--dim); z-index: 9; pointer-events: none; text-shadow: 0 1px 4px #000;
-  opacity: 0; transition: opacity .5s var(--ease-out); white-space: nowrap;
+  position: fixed; left: 50%; transform: translateX(-50%); top: 59%;
+  font: 500 11px/1 'Geist Mono', monospace; letter-spacing: .1em; text-transform: uppercase;
+  color: #c3c7cf; z-index: 9; pointer-events: none; white-space: nowrap;
+  /* readable plate so it doesn't disappear into the camera feed */
+  background: rgba(8,11,16,0.62); padding: 7px 15px; border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.09);
+  -webkit-backdrop-filter: blur(9px) saturate(1.1); backdrop-filter: blur(9px) saturate(1.1);
+  box-shadow: 0 6px 20px -8px rgba(0,0,0,0.7);
+  opacity: 0; transition: opacity .5s var(--ease-out);
 }
-.talkhint.show { opacity: 0.66; }
+.talkhint.show { opacity: 0.96; }
 /* ===== timeline scrubber (Lattice time-dynamic COP) ===== */
 .timeline { position: fixed; left: 50%; transform: translateX(-50%);
   bottom: calc(var(--dock-h, 150px) + 44px); width: min(560px, 92vw); z-index: 37; display: none;
@@ -4198,7 +4209,7 @@ try {
     const state = vs.state || 'idle', power = vs.power || 'full';
 
     // ENERGY from power state: eco = dormant/dim, waking = bright spin-up, full = alive
-    const eTarget = power === 'eco' ? 0.18
+    const eTarget = power === 'eco' ? 0.42
       : power === 'waking' ? 1.18
       : (power === 'shutting' || power === 'rebooting') ? 0.12 : 1;
     energy += (eTarget - energy) * Math.min(1, dt * 2.5);
