@@ -1040,6 +1040,8 @@ textarea#text::placeholder { color: var(--dim); }
 .live-toggle.convo-toggle { top: 126px; }
 /* wake pill → top-center */
 .wake-pill { top: 52px !important; left: 50% !important; bottom: auto !important; transform: translateX(-50%); }
+/* power banner (eco/waking/…) takes the top-center slot — hide the wake pill so they don't overlap */
+body.pwr-banner .wake-pill { display: none !important; }
 
 /* central companion orb (the thing you talk to) */
 .presence {
@@ -1986,6 +1988,9 @@ function applyPower(m) {
   } else {
     b.className = 'percbanner ecomode';
   }
+  // the power banner and the wake pill share the top-center slot — suppress the
+  // wake pill while the banner is up so they don't overlap.
+  document.body.classList.toggle('pwr-banner', b.classList.contains('on'));
 }
 $('#eco-wake') && ($('#eco-wake').onclick = () => setPower('wake'));
 window.powerAction = (a) => setPower(a);
