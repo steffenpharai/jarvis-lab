@@ -3,6 +3,21 @@
 Pushed the on-device frontier further and hardened the 8 GB engineering.
 Highlights (newest first):
 
+- **Power management — FULL / ECO / OFF + voice wake + auto-eco.** Three power
+  states: ECO stops the VLM (the heat: ~20W/70°C → ~7.6W/cool) but keeps mic +
+  wake word alive so voice can wake it; OFF (`poweroff`) can only be undone by
+  the physical button; REBOOT. `POST /power {eco|wake|shutdown|reboot}`,
+  `power_state` in `/metrics`. Power phrases ("wake up", "eco mode", "shut down")
+  are text-matched before the VLM so they work in eco (Piper speaks). Auto-eco
+  after 15 min idle; a request/voice wakes it. **Boot-to-eco**: jarvis-vlm is now
+  disabled from auto-start (jarvis-voice boots standalone) so the box comes up
+  cool; the VLM starts on the first request/wake. nvpmodel stays MAXN_SUPER (7W
+  needs a reboot on this board; the VLM-stop is the real saving).
+- **Topbar declutter + live footer.** 11 unlabeled icons → 5 labeled controls:
+  a POWER pill (state + menu), Intel, Diagnostics, a "Views ▾" menu (link-chart /
+  timeline / point-cloud / training-data) and a "More ▾" menu (wake-word / export
+  / clear / shortcuts) + the settings gear. The command-dock footer is now a live
+  status strip (● state · model · tok/s · fps · W) + a shortcuts hint.
 - **Training-dataset export ("robotics data engine")** — `export_dataset` turns
   the visual memory + grounded Q&A into a portable, standards-aligned bundle
   (Open-X / LeRobot-friendly JSONL + frames + a consent/provenance card).

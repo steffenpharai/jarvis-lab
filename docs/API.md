@@ -294,6 +294,19 @@ The 512×384 frame that was actually fed to the VLM for that turn.
 |---|---|---|
 | POST | `/perception` | Body `{on:bool}`. Threaded mode switch — stops the VLM, CMA-preflights, starts OWL (and back). Mutually exclusive on 8 GB (`jarvis-owl` `Conflicts=jarvis-vlm`); the dashboard survives (voice `Wants=` not `Requires=`). Poll `perception_mode`/`owl_up` in `/metrics`; draw live boxes via `POST /tool/detect_objects` |
 
+### Power management (FULL / ECO / OFF)
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/power` | Body `{action: "eco"\|"wake"\|"shutdown"\|"reboot"}`. **eco** stops the VLM + pauses the captioner (mic/wake-word stay alive, ~7.6 W); **wake** restarts the VLM (~50-90 s) and resets the idle timer; **shutdown**/**reboot** fire `systemctl poweroff`/`reboot` after a short grace. Eco/wake run in a thread — poll `power_state` in `/metrics` |
+
+`/metrics` adds `power_state` (`full`\|`eco`) and `power_transition` (e.g.
+`"waking"`, `"entering eco"`, `"shutting down"`). Voice equivalents: the STT
+phrases "wake up", "eco mode", "shut down", "reboot" route to `/power` *before*
+the VLM (so they work in eco). Auto-eco fires after 15 min idle. **Boot-to-eco**:
+jarvis-vlm is disabled from auto-start; jarvis-voice boots standalone and detects
+state via `systemctl is-active jarvis-vlm`. **OFF can only be undone by the
+physical button** — no voice/network wake.
+
 ### Visual-memory capture (live ticker)
 `POST /memory/visual/capture` accepts `{bg:true}` → background caption
 (`priority=False`: yields to interactive turns, skips if the VLM is busy). Used by

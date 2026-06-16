@@ -8,6 +8,14 @@ Day-to-day running, monitoring, and recovery of a deployed Jarvis Lab.
 
 ### Start
 
+Normally systemd handles this: `jarvis-voice` is enabled and **boots cool in
+ECO** (the dashboard comes up on :8085 with the VLM stopped). `jarvis-vlm` is
+**installed but disabled** (boot-to-eco) — it starts on the first request, on
+"wake up", or via the UI power pill / `POST /power {"action":"wake"}`. To boot
+straight to full power instead: `sudo systemctl enable jarvis-vlm`.
+
+Manual bring-up to FULL (e.g. debugging):
+
 ```bash
 ssh zip-jetson
 
@@ -17,7 +25,7 @@ ssh zip-jetson
 # 2. Wait for it
 until curl -fsS http://127.0.0.1:8080/health >/dev/null; do sleep 1; done
 
-# 3. Start the dashboard / orchestrator on :8085
+# 3. Start the dashboard / orchestrator on :8085 (or: systemctl start jarvis-voice)
 python3 ~/jarvis-lab/scripts/jarvis_voice.py \
   >> ~/jarvis-lab/logs/jarvis_voice.log 2>&1 &
 disown
@@ -124,6 +132,14 @@ curl -sX POST :8085/nano/jetson_clocks -d '{"on":true}'   # ... {"on":false} to 
 # Perception mode: swap to real-time NanoOWL boxes (PAUSES the VLM — 8 GB can't
 # run both). Returns to the VLM on {"on":false} (~40 s reload).
 curl -sX POST :8085/perception -d '{"on":true}'
+
+# Power: FULL <-> ECO (cool) + OFF/REBOOT. ECO stops the VLM (~20W→~7.6W); wakes
+# on the first request, "wake up", or the UI. OFF can ONLY be undone by the
+# physical button on the Jetson (no voice/network wake).
+curl -sX POST :8085/power -d '{"action":"eco"}'     # cool down (stop the VLM)
+curl -sX POST :8085/power -d '{"action":"wake"}'    # full power (reload VLM ~60s)
+curl -sX POST :8085/power -d '{"action":"reboot"}'  # remote reboot
+# curl -sX POST :8085/power -d '{"action":"shutdown"}'  # poweroff — button to wake!
 
 # Self-healing watchdog (auto-refreshes the VLM under memory pressure)
 curl -sX POST :8085/nano/autorefresh -d '{"enabled":true,"min_avail_mb":160}'

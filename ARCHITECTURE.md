@@ -498,3 +498,27 @@ investigate crops are ~3× sharper; VLM turns stay fast because
 `object-fit: cover`, so tap-to-crop and the targeting reticle apply an explicit
 **cover transform** (image-px ↔ element-%) — otherwise the crop and the box point
 at different pixels when the window isn't 16:9.
+
+### 13.8 Power management (FULL / ECO / OFF)
+Three power states, one state machine shared with perception/self-heal:
+- **FULL** — MAXN_SUPER + VLM up + captioner on (~20 W / ~70 °C).
+- **ECO** — the VLM is **stopped** (it's ~all of the power/heat → ~7.6 W, cool)
+  and the captioner is paused, but the dashboard + mic + **wake word stay alive**
+  so voice can wake it. nvpmodel is *not* changed — the 7 W mode requires a reboot
+  on this board, and the VLM-stop is the real saving; nvpmodel stays MAXN_SUPER
+  (⚡Turbo/jetson_clocks is the separate high-usage lever).
+- **OFF** (`systemctl poweroff`) — only the **physical button** brings it back;
+  no voice/network can wake it. REBOOT is offered for remote recovery.
+
+`POST /power {action}` runs eco/wake transitions in a thread; `power_state` /
+`power_transition` are in `/metrics`. **Voice power commands** ("wake up", "eco
+mode", "shut down", "reboot") are text-matched on the STT transcript in `run_turn`
+**before** the VLM call, so they work in eco where the VLM is down (Piper speaks
+the confirmation — TTS is independent of the VLM). A normal request in eco
+**auto-wakes** first. **Auto-eco** fires after 15 min idle (hosted in the
+self-heal watchdog, which stands down in eco/perception); waking resets the idle
+timer so it won't immediately re-fire. **Boot-to-eco**: jarvis-vlm is disabled
+from auto-start and jarvis-voice.service no longer `Wants=`/health-waits it, so
+the box boots cool; startup reads the state from `systemctl is-active jarvis-vlm`
+and the VLM starts on the first request or wake. The topbar exposes a power pill
+(state + menu); the footer shows the live state.

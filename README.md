@@ -66,6 +66,8 @@ the thing you talk to; the chat recedes into ephemeral captions. Around it:
 | **Timeline scrubber** | scrub back through what JARVIS saw over time |
 | **Targeting frame + radar sweep** | always-on Iron-Man HUD chrome |
 | **⌘K spotlight** | global search across entities, capabilities, and memory |
+| **Top bar** | labeled controls: a **power pill** (FULL/ECO/WAKING + menu), Intel, Diagnostics, a Views ▾ menu (link-chart/timeline/point-cloud/training-data), More ▾, settings |
+| **Footer** | live status strip — ● state · model · tok/s · fps · power (W) + a shortcuts hint |
 
 Design language: Palantir Blueprint density + Apple "Liquid Glass" + restraint.
 A single accent (rust) with semantic state colors, Geist + Geist Mono with
@@ -99,6 +101,14 @@ crypto), productivity (notes, todos, reminders, bookmarks, journal), vision,
 memory, self-management, and smart-home (Hue). Cloud-frontier escalation
 (Claude/GPT/Gemini) exists but is **gated off by default** — fully local unless
 you opt in with a key.
+
+**Power & thermal** — three power states: **FULL** (full power), **ECO** (stops
+the VLM → ~20 W/70 °C drops to ~7.6 W/cool, but mic + wake word stay alive), and
+**OFF** (`poweroff`). Enter eco/wake/shutdown/reboot from the UI **or by voice**
+("Hey Jarvis, eco mode" / "wake up" / "shut down"), and it **auto-drops to eco
+after 15 min idle**. Boots cool (**boot-to-eco**) and wakes on the first request.
+> ⚠️ A full power-**off** can only be undone by the **physical button** on the
+> Jetson — voice/network can't wake it from off (only from eco).
 
 **Diagnostics & self-healing** — full Jetson telemetry (`tegrastats` + INA3221 +
 sysfs) at `/nano`; live VLM inference perf (tok/s, TTFT, prefill, KV-cache reuse);
@@ -200,11 +210,19 @@ Full fresh-install walkthrough in [`docs/DEPLOY.md`](docs/DEPLOY.md). Once
 installed, the systemd units bring everything up on boot:
 
 ```bash
-sudo systemctl enable --now jarvis-vlm jarvis-voice   # VLM (:8080) + dashboard (:8085)
+sudo systemctl enable --now jarvis-voice   # dashboard (:8085) — boots cool in ECO
+# jarvis-vlm is installed but NOT enabled (boot-to-eco): it starts on the first
+# request or "wake up". To boot straight to full power instead:
+#   sudo systemctl enable jarvis-vlm
 # open http://<jetson-ip>:8085/
 ```
 
-Optional open-vocab detector (8 GB-tight, opt-in):
+Power: drive it from the UI power pill or by voice ("Hey Jarvis, eco mode" /
+"wake up" / "shut down"); it auto-eco's after 15 min idle. A full power-off needs
+the physical button to come back on.
+
+Optional open-vocab detector — **perception mode** (mutually exclusive with the
+VLM on 8 GB; use the UI/voice, or directly):
 
 ```bash
 sudo systemctl start jarvis-owl                        # NanoOWL sidecar (:8086)
