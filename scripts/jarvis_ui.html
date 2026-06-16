@@ -233,6 +233,44 @@ body {
 .iconbtn.live-on { color: var(--ok); border-color: rgba(74,222,128,0.2); }
 .iconbtn svg { width: 16px; height: 16px; }
 
+/* labeled topbar buttons, power pill + dropdown menus */
+.tbtn, .tbpill {
+  display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 11px;
+  background: transparent; border: 1px solid var(--border); border-radius: var(--r-sm);
+  color: var(--muted); font: 600 12px/1 'Geist', sans-serif; font-family: inherit;
+  letter-spacing: .02em; cursor: pointer; transition: 140ms ease-out; white-space: nowrap;
+}
+.tbtn svg, .tbpill svg { width: 15px; height: 15px; flex-shrink: 0; }
+.tbtn .caret, .tbpill .caret { width: 12px; height: 12px; opacity: .55; margin-left: -1px; }
+.tbtn:hover, .tbpill:hover { color: var(--text); border-color: var(--accent-soft); background: var(--accent-soft); }
+.tbtn.active { color: var(--accent); border-color: var(--accent-soft); }
+.tbdiv { width: 1px; height: 20px; background: var(--border); margin: 0 5px; flex-shrink: 0; }
+.tbwrap { position: relative; }
+.tbpill .pdot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 7px rgba(74,222,128,0.6); flex-shrink: 0; }
+.tbpill.eco { color: var(--warn); border-color: rgba(245,158,11,0.3); }
+.tbpill.eco .pdot { background: var(--warn); box-shadow: 0 0 7px rgba(245,158,11,0.6); }
+.tbpill.busy { color: var(--cyan); border-color: rgba(56,189,248,0.3); }
+.tbpill.busy .pdot { background: var(--cyan); box-shadow: 0 0 8px rgba(56,189,248,0.7); animation: pulse 1.2s ease-in-out infinite; }
+.tbpop {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 50; display: none;
+  min-width: 196px; padding: 6px; border-radius: var(--r-md);
+  background: rgba(11,12,15,0.96); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--border-strong); box-shadow: 0 18px 50px -16px rgba(0,0,0,0.8);
+}
+.tbpop.open { display: block; animation: msgIn 140ms ease-out; }
+.tbitem {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px;
+  background: transparent; border: none; border-radius: var(--r-sm); cursor: pointer;
+  color: var(--text); font: 500 12.5px/1 'Geist', sans-serif; font-family: inherit; text-align: left;
+}
+.tbitem svg { width: 15px; height: 15px; color: var(--muted); flex-shrink: 0; }
+.tbitem:hover { background: var(--accent-soft); } .tbitem:hover svg { color: var(--accent); }
+.tbitem.active { color: var(--accent); } .tbitem.active svg { color: var(--accent); }
+.tbitem.danger { color: var(--bad); } .tbitem.danger svg { color: var(--bad); }
+.tbitem.danger:hover { background: rgba(239,68,68,0.12); }
+.tbsep { height: 1px; background: var(--border); margin: 5px 4px; }
+@media (max-width: 720px) { .tbtn span, .tbpill #powerlabel { display: none; } .tbdiv { display: none; } .topbar-actions { gap: 2px; } }
+
 /* main */
 .main {
   display: grid; gap: 14px; padding: 14px max(22px, calc((100vw - 1100px) / 2));
@@ -680,13 +718,17 @@ textarea#text::placeholder { color: var(--dim); }
 .sendbtn:disabled { background: var(--raised); color: var(--dim); cursor: not-allowed; transform: none; box-shadow: none; }
 .sendbtn svg { width: 16px; height: 16px; }
 
-/* idle: nothing to show here (Stop appears only while streaming) — collapse it
-   so the dock stays tight and uncluttered */
-.composer-foot { display: none; }
-.composer-foot.busy {
-  display: flex; align-items: center; justify-content: flex-end;
+/* footer status strip: live state on the left, key shortcuts middle, Stop right */
+.composer-foot {
+  display: flex; align-items: center; gap: 12px;
   font: 500 11px/1.2 'Geist Mono', monospace; color: var(--dim);
 }
+.foot-status { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.foot-status .fs-dot { color: var(--ok); }
+.foot-status .fs-eco { color: var(--warn); }
+.foot-hint { margin-left: auto; color: var(--dim); white-space: nowrap; }
+.composer-foot.busy .foot-hint { display: none; }
+@media (max-width: 640px) { .foot-hint { display: none; } }
 .composer-foot .stop {
   background: transparent; border: 1px solid var(--accent);
   color: var(--accent); padding: 3px 10px; border-radius: var(--r-pill);
@@ -1249,36 +1291,54 @@ textarea#text::placeholder { color: var(--dim); }
   <div class=topbar>
     <div class=brand>Jarvis</div>
     <div class=topbar-actions>
-      <button class=iconbtn id=wakebtn title='Toggle "Hey Jarvis" wake word' aria-label='wake word'>
-        <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z'/><path d='M19 10v2a7 7 0 0 1-14 0v-2'/><line x1='12' y1='19' x2='12' y2='23'/><line x1='8' y1='23' x2='16' y2='23'/></svg>
+      <!-- POWER pill: shows state, opens the power menu -->
+      <div class=tbwrap>
+        <button class=tbpill id=powerbtn aria-haspopup=true title='Power'>
+          <span class=pdot id=powerdot></span><span id=powerlabel>FULL</span>
+          <svg class=caret viewBox='0 0 24 24' fill=none stroke=currentColor stroke-width=2><path d='m6 9 6 6 6-6'/></svg>
+        </button>
+        <div class=tbpop id=powermenu>
+          <button class=tbitem id=pm-wake><svg viewBox='0 0 24 24' fill=none stroke=currentColor stroke-width=2 stroke-linecap=round stroke-linejoin=round><circle cx=12 cy=12 r=5/><path d='M12 1v3M12 20v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M1 12h3M20 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1'/></svg><span>Wake (full power)</span></button>
+          <button class=tbitem id=pm-eco><svg viewBox='0 0 24 24' fill=none stroke=currentColor stroke-width=2 stroke-linecap=round stroke-linejoin=round><path d='M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z'/></svg><span>Eco mode (cool)</span></button>
+          <div class=tbsep></div>
+          <button class=tbitem id=pm-reboot><svg viewBox='0 0 24 24' fill=none stroke=currentColor stroke-width=2 stroke-linecap=round stroke-linejoin=round><path d='M23 4v6h-6'/><path d='M20.49 15a9 9 0 1 1-2.12-9.36L23 10'/></svg><span>Reboot</span></button>
+          <button class='tbitem danger' id=pm-off><svg viewBox='0 0 24 24' fill=none stroke=currentColor stroke-width=2 stroke-linecap=round stroke-linejoin=round><path d='M18.36 6.64a9 9 0 1 1-12.73 0'/><line x1=12 y1=2 x2=12 y2=12/></svg><span>Shut down</span></button>
+        </div>
+      </div>
+      <span class=tbdiv></span>
+      <!-- INTEL (direct) -->
+      <button class=tbtn id=intelbtn title='Intel panel'>
+        <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='3' y='3' width='18' height='18' rx='2'/><path d='M15 3v18'/><path d='M7 8h4M7 12h4'/></svg><span>Intel</span>
       </button>
-      <button class=iconbtn id=shortcutsbtn title='Shortcuts (?)' aria-label=shortcuts>
-        <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='10'/><path d='M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3'/><path d='M12 17h.01'/></svg>
+      <!-- NANO diagnostics (direct) -->
+      <button class=tbtn id=nanobtn title='Live GPU / CPU / thermal / power'>
+        <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='4' y='4' width='16' height='16' rx='2'/><rect x='9' y='9' width='6' height='6'/><path d='M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3'/></svg><span>Diagnostics</span>
       </button>
-      <button class=iconbtn id=exportbtn title='Export conversation as Markdown' aria-label=export>
-        <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4'/><polyline points='7 10 12 15 17 10'/><line x1='12' y1='15' x2='12' y2='3'/></svg>
-      </button>
-      <button class=iconbtn id=clearbtn title='Clear current conversation' aria-label=clear>
-        <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M3 6h18'/><path d='M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6'/><path d='M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2'/></svg>
-      </button>
-      <button class=iconbtn id=graphbtn title='Link chart — entity graph' aria-label='link chart'>
-        <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='5' cy='6' r='2'/><circle cx='19' cy='8' r='2'/><circle cx='12' cy='18' r='2'/><circle cx='6' cy='15' r='2'/><path d='M7 7l10 1M7.5 13.5 11 17M17.5 9.5 13 16'/></svg>
-      </button>
-      <button class=iconbtn id=timelinebtn title='Timeline — scrub what Jarvis has seen' aria-label='timeline'>
-        <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='9'/><path d='M12 7v5l3 2'/></svg>
-      </button>
-      <button class=iconbtn id=cloudbtn title='3D point-cloud scan of the scene' aria-label='point cloud'>
-        <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 2 2 7l10 5 10-5-10-5z'/><path d='M2 17l10 5 10-5M2 12l10 5 10-5'/></svg>
-      </button>
-      <button class=iconbtn id=intelbtn title='Intel panel (conversation, entities, watches)' aria-label='intel panel'>
-        <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='3' y='3' width='18' height='18' rx='2'/><path d='M15 3v18'/><path d='M7 8h4M7 12h4'/></svg>
-      </button>
-      <button class=iconbtn id=nanobtn title='Nano diagnostics — live GPU / CPU / thermal / power' aria-label='nano diagnostics'>
-        <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='4' y='4' width='16' height='16' rx='2'/><rect x='9' y='9' width='6' height='6'/><path d='M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3'/></svg>
-      </button>
-      <button class=iconbtn id=datasetbtn title='Training data — export visual memory as a dataset' aria-label='training data'>
-        <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><ellipse cx='12' cy='5' rx='8' ry='3'/><path d='M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5'/><path d='M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6'/></svg>
-      </button>
+      <!-- VIEWS menu: full-screen scene visualizations -->
+      <div class=tbwrap>
+        <button class=tbtn id=viewsbtn aria-haspopup=true title='Scene views'>
+          <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z'/><circle cx='12' cy='12' r='3'/></svg><span>Views</span>
+          <svg class=caret viewBox='0 0 24 24' fill=none stroke=currentColor stroke-width=2><path d='m6 9 6 6 6-6'/></svg>
+        </button>
+        <div class=tbpop id=viewsmenu>
+          <button class=tbitem id=graphbtn><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='5' cy='6' r='2'/><circle cx='19' cy='8' r='2'/><circle cx='12' cy='18' r='2'/><circle cx='6' cy='15' r='2'/><path d='M7 7l10 1M7.5 13.5 11 17M17.5 9.5 13 16'/></svg><span>Link chart</span></button>
+          <button class=tbitem id=timelinebtn><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='9'/><path d='M12 7v5l3 2'/></svg><span>Timeline</span></button>
+          <button class=tbitem id=cloudbtn><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 2 2 7l10 5 10-5-10-5z'/><path d='M2 17l10 5 10-5M2 12l10 5 10-5'/></svg><span>3D point cloud</span></button>
+          <button class=tbitem id=datasetbtn><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><ellipse cx='12' cy='5' rx='8' ry='3'/><path d='M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5'/><path d='M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6'/></svg><span>Training data</span></button>
+        </div>
+      </div>
+      <!-- MORE menu: less-used actions -->
+      <div class=tbwrap>
+        <button class=tbtn id=morebtn aria-haspopup=true title='More'>
+          <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='5' cy='12' r='1'/><circle cx='12' cy='12' r='1'/><circle cx='19' cy='12' r='1'/></svg><span>More</span>
+        </button>
+        <div class=tbpop id=moremenu>
+          <button class=tbitem id=wakebtn><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z'/><path d='M19 10v2a7 7 0 0 1-14 0v-2'/><line x1='12' y1='19' x2='12' y2='23'/><line x1='8' y1='23' x2='16' y2='23'/></svg><span>Wake word</span></button>
+          <button class=tbitem id=exportbtn><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4'/><polyline points='7 10 12 15 17 10'/><line x1='12' y1='15' x2='12' y2='3'/></svg><span>Export chat</span></button>
+          <button class=tbitem id=clearbtn><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M3 6h18'/><path d='M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6'/><path d='M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2'/></svg><span>Clear chat</span></button>
+          <button class=tbitem id=shortcutsbtn><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='10'/><path d='M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3'/><path d='M12 17h.01'/></svg><span>Shortcuts</span></button>
+        </div>
+      </div>
       <button class=iconbtn id=settingsbtn title='Settings' aria-label=settings>
         <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='3'/><path d='M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z'/></svg>
       </button>
@@ -1454,6 +1514,8 @@ textarea#text::placeholder { color: var(--dim); }
         </button>
       </div>
       <div class=composer-foot id=composerfoot>
+        <span class=foot-status id=footstatus></span>
+        <span class=foot-hint><kbd class=kbd>/</kbd> commands · <kbd class=kbd>?</kbd> help · <kbd class=kbd>Space</kbd> snap</span>
         <button class=stop id=stopbtn>Stop</button>
       </div>
       <div class=palette id=palette></div>
@@ -1880,6 +1942,13 @@ function applyPower(m) {
   window._ecoMode = (st === 'eco');
   // reflect on the NANO panel power buttons if open
   const pb = $('#nano-power-state'); if (pb) pb.textContent = (tr || st || 'full').toUpperCase();
+  // topbar power pill
+  const pill = $('#powerbtn'), plbl = $('#powerlabel');
+  if (pill && plbl) {
+    if (tr) { pill.className = 'tbpill busy'; plbl.textContent = tr.split(' ')[0].toUpperCase(); }
+    else if (st === 'eco') { pill.className = 'tbpill eco'; plbl.textContent = 'ECO'; }
+    else { pill.className = 'tbpill'; plbl.textContent = 'FULL'; }
+  }
   if (tr === 'waking' || tr === 'entering eco' || tr === 'shutting down' || tr === 'rebooting') {
     b.className = 'percbanner ecomode warn on';
     $('#eco-txt').textContent = tr.toUpperCase() + '…';
@@ -1894,6 +1963,20 @@ function applyPower(m) {
 }
 $('#eco-wake') && ($('#eco-wake').onclick = () => setPower('wake'));
 window.powerAction = (a) => setPower(a);
+
+/* ===== topbar dropdown menus (Power / Views / More) ===== */
+function _closeMenus() { document.querySelectorAll('.tbpop.open').forEach(m => m.classList.remove('open')); }
+[['powerbtn', 'powermenu'], ['viewsbtn', 'viewsmenu'], ['morebtn', 'moremenu']].forEach(([b, m]) => {
+  const btn = $('#' + b), pop = $('#' + m);
+  if (!btn || !pop) return;
+  btn.addEventListener('click', e => { e.stopPropagation(); const wasOpen = pop.classList.contains('open'); _closeMenus(); if (!wasOpen) pop.classList.add('open'); });
+});
+document.addEventListener('click', _closeMenus);
+window.addEventListener('keydown', e => { if (e.key === 'Escape') _closeMenus(); });
+$('#pm-wake') && ($('#pm-wake').onclick = () => setPower('wake'));
+$('#pm-eco') && ($('#pm-eco').onclick = () => setPower('eco'));
+$('#pm-reboot') && ($('#pm-reboot').onclick = () => setPower('reboot'));
+$('#pm-off') && ($('#pm-off').onclick = () => setPower('shutdown'));
 function entityListView() {
   $('#entity-detail').classList.add('hidden');
   $('#entities-list').classList.remove('hidden');
@@ -2171,6 +2254,13 @@ async function tickMetrics() {
       '<span class=hud-sep>·</span>' +
       '<span>' + m.ram_avail_mb + 'MB</span>';
     $('#hudbl').textContent = 'qwen2.5-vl-3b · history: ' + m.history_pairs + ' · memory: ' + m.memory_count;
+    const fs = $('#footstatus');
+    if (fs) {
+      const fps = (m.cam_fps || 0).toFixed(0);
+      if (m.power_transition) fs.innerHTML = '<span class=fs-eco>●</span> ' + m.power_transition + '…';
+      else if (m.power_state === 'eco') fs.innerHTML = '<span class=fs-eco>●</span> ECO · VLM asleep · ' + fps + ' fps';
+      else fs.innerHTML = '<span class=fs-dot>●</span> qwen2.5-vl-3b' + (m.vlm_tok_s ? ' · ' + m.vlm_tok_s + ' tok/s' : '') + ' · ' + fps + ' fps' + (m.power_w != null ? ' · ' + m.power_w + ' W' : '');
+    }
     liveCount.textContent = m.live_observations;
     memCount.textContent = m.memory_count;
     const sc = $('#seen-count'); if (sc) sc.textContent = m.vmem_count || 0;
