@@ -180,14 +180,6 @@
 .hudframe .hc.tr { right: 0; top: 0; border-left: 0; border-bottom: 0; }
 .hudframe .hc.bl { left: 0; bottom: 0; border-right: 0; border-top: 0; }
 .hudframe .hc.br { right: 0; bottom: 0; border-left: 0; border-top: 0; }
-/* ambient radar scan sweep (Iron-Man targeting) */
-.scansweep { position: absolute; inset: 0; z-index: 2; pointer-events: none; overflow: hidden; opacity: 0.45; }
-.scansweep::before { content: ''; position: absolute; inset: -60%;
-  background: conic-gradient(from 0deg, transparent 0deg, transparent 320deg,
-    rgba(56,189,248,0.04) 340deg, rgba(56,189,248,0.16) 358deg, rgba(56,189,248,0.30) 360deg);
-  animation: radarSpin 7s linear infinite; transform-origin: 50% 50%; }
-@keyframes radarSpin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .scansweep { display: none; } }
 /* entity-track overlay (Lattice-style detection boxes drawn on the world view) */
 .tracks { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 3; pointer-events: none; }
 /* three.js holographic voice-presence orb (top-center of the feed) */
@@ -1385,7 +1377,6 @@ textarea#text::placeholder { color: var(--dim); }
       <div class=hudframe aria-hidden=true>
         <span class='hc tl'></span><span class='hc tr'></span><span class='hc bl'></span><span class='hc br'></span>
       </div>
-      <div class=scansweep aria-hidden=true></div>
       <svg class=tracks id=tracks viewBox='0 0 1000 1000' preserveAspectRatio=none></svg>
       <div class=percbanner id=percbanner><span class=perc-dot></span><span id=perc-txt></span><button class=perc-exit id=perc-exit>Return to VLM</button></div>
       <div class="percbanner ecomode" id=ecobanner><span class=perc-dot></span><span id=eco-txt></span><button class=perc-exit id=eco-wake>Wake</button></div>
