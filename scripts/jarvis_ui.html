@@ -2322,6 +2322,10 @@ async function tickMetrics() {
       wakepill.classList.toggle('on', wakeOn);
       wakebtn.classList.toggle('active', wakeOn);
     }
+    // keep the live event stream attached whenever the wake word is on, so a
+    // "Hey Jarvis" event always reaches the UI (and enters conversation) even
+    // when Live Mode is off. attachLiveStream() is a no-op if already attached.
+    if (wakeOn && !liveES) attachLiveStream();
     if (typeof m.agent_mode_enabled === 'boolean' && m.agent_mode_enabled !== agentOn) {
       agentOn = m.agent_mode_enabled;
       agenttoggle.classList.toggle('on', agentOn);

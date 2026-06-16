@@ -31,6 +31,7 @@ import sqlite3
 import struct
 import subprocess
 import threading
+import random
 import time
 import uuid
 import wave
@@ -1292,6 +1293,34 @@ def get_turn(tid: str) -> TurnCtx | None:
 
 
 # ----- turn worker ------------------------------------------------------------
+# Whisper tiny.en hallucinates these short phrases on (near-)silence — in
+# conversation mode treat them as "heard nothing" so we don't run the VLM (and
+# describe the room) on a phantom transcript.
+_WHISPER_SILENCE = {
+    "", "you", "thank you", "thanks", "thanks for watching", "thank you for watching",
+    "bye", "okay", "ok", "uh", "um", "hmm", "so", "the", "i", ".", "...", "yeah",
+    "[blank_audio]", "(silence)", "thank you for watching.", "thanks for watching.",
+}
+
+
+def _looks_like_silence(text: str) -> bool:
+    t = (text or "").strip().lower().strip(".!?,… ").strip()
+    return len(t) < 2 or t in _WHISPER_SILENCE
+
+
+# Spoken acknowledgement on wake-from-eco — instant, no VLM, no scene description.
+_GREETINGS = [
+    "Good to hear from you, sir. I'm online and ready.",
+    "At your service, sir. What can I do for you?",
+    "Online and ready, sir. How can I help?",
+    "Yes, sir — I'm right here. What do you need?",
+]
+
+
+def _greeting_text() -> str:
+    return random.choice(_GREETINGS)
+
+
 def run_turn(ctx: TurnCtx, payload: dict) -> None:
     tid = ctx.tid
     LAST_USER_ACTIVITY["ts"] = time.time()
@@ -1301,6 +1330,32 @@ def run_turn(ctx: TurnCtx, payload: dict) -> None:
     transcription = ""
     kind = ctx.kind
     try:
+        # wake-from-eco greeting: acknowledge instantly (TTS only) — skip
+        # recording / camera / VLM so we never cold-start into a scene description.
+        if payload.get("greet"):
+            greeting = _greeting_text()
+            ctx.emit({"phase": "thinking"})
+            ctx.emit({"phase": "token", "delta": greeting})
+            gtts = StreamingTTS(tid, lambda seg: ctx.emit({"phase": "audio_segment", **seg}))
+            gtts.add_delta(greeting)
+            ctx.emit({"phase": "speaking"})
+            gtts.finish()
+            gtts.done_evt.wait(timeout=15)
+            try:
+                synthesize(greeting, work / "reply.wav")
+            except Exception:  # noqa: BLE001
+                pass
+            history_append("assistant", greeting)
+            ctx.result = {"turn_id": tid, "kind": "talk", "question": "(wake)",
+                          "transcription": "", "reply": greeting, "cancelled": False,
+                          "timings": {}, "usage": {"greet": True},
+                          "audio_url": f"/audio/{tid}.wav", "ts": time.time()}
+            try:
+                MEMORY.record(ctx.result)
+            except Exception:  # noqa: BLE001
+                pass
+            ctx.emit({"phase": "done", "result": ctx.result})
+            return
         with SETTINGS_LOCK:
             rec_default = SETTINGS["record_seconds"]
         seconds = max(2, min(15, int(payload.get("seconds", rec_default))))
@@ -1321,7 +1376,7 @@ def run_turn(ctx: TurnCtx, payload: dict) -> None:
             # Conversation mode: if we heard nothing, don't invent a scene reply
             # (that would loop "describe the scene" forever). Signal the client so
             # it can keep listening or gracefully end the conversation.
-            if payload.get("convo") and len((transcription or "").strip()) < 2:
+            if payload.get("convo") and _looks_like_silence(transcription):
                 ctx.emit({"phase": "no_speech"})
                 ctx.emit({"phase": "done", "result": {
                     "turn_id": tid, "kind": "talk", "reply": "",
@@ -1845,15 +1900,20 @@ WATCHER = Watcher()
 
 # ----- wake-word integration (triggers a voice turn when "Hey Jarvis") --------
 def _wake_callback(score: float) -> None:
-    """When wake word detected, fire a talk-mode turn."""
+    """When wake word detected, fire a turn. From ECO we GREET instantly and warm
+    the VLM in the background (no cold-start scene-describe); when already full we
+    record + process the command agentically. Either way we enter conversation."""
     tid = ("wake-" + time.strftime("%Y%m%d-%H%M%S")
            + "-" + uuid.uuid4().hex[:4])
+    if POWER["state"] == "eco":
+        if not POWER.get("transition"):
+            set_power("wake")   # warm the VLM in the background while we greet
+        payload = {"kind": "talk", "greet": True, "convo": True, "wake_score": score}
+    else:
+        payload = {"kind": "talk", "seconds": 8, "convo": True, "agent": True,
+                   "wake_score": score}
     ctx = register_turn(tid, "talk")
-    threading.Thread(
-        target=run_turn,
-        args=(ctx, {"kind": "talk", "seconds": 8, "convo": True, "agent": True, "wake_score": score}),
-        daemon=True,
-    ).start()
+    threading.Thread(target=run_turn, args=(ctx, payload), daemon=True).start()
     # Broadcast wake event to all live subscribers so the UI lights up
     LIVE._broadcast({"event": "wake", "turn_id": tid, "score": score,
                      "ts": time.time()})
@@ -2317,7 +2377,14 @@ def wake_if_eco(emit=None) -> bool:
         return False
     if emit:
         emit({"phase": "waking"})
-    _power_transition("full")   # synchronous: stops returning until VLM is up
+    if POWER.get("transition") == "waking":
+        # a wake is already in flight (e.g. kicked off by the greeting) — just wait
+        # for it instead of starting a second jarvis-vlm.
+        deadline = time.time() + 95
+        while time.time() < deadline and POWER["state"] == "eco":
+            time.sleep(1)
+    else:
+        _power_transition("full")   # synchronous: stops returning until VLM is up
     return True
 
 

@@ -3,6 +3,18 @@
 Pushed the on-device frontier further and hardened the 8 GB engineering.
 Highlights (newest first):
 
+- **Wake-from-eco now greets instead of judging the room.** Saying "Hey Jarvis"
+  while asleep used to cold-start the VLM and immediately describe the camera scene
+  (a near-silent recording → Whisper hallucinates filler text → VLM narrates the
+  room). Now wake-from-eco fires an instant spoken greeting ("Online and ready,
+  sir…"), warms the VLM in the background, and drops straight into conversation —
+  no recording, camera, or VLM pass for the greeting. Hardened two things behind it:
+  conversation turns now treat common Whisper silence-hallucinations ("thank you",
+  "you", "thanks for watching", "[BLANK_AUDIO]", …) as no-speech (not just empty
+  strings), and the live event stream stays attached whenever the wake word is on
+  so "Hey Jarvis" reliably reaches the UI and starts the conversation loop even with
+  Live Mode off. Double-wake guarded (a request during warm-up waits for the
+  in-flight wake instead of starting a second VLM).
 - **Voice is now fully agentic (tools, not just vision).** Spoken turns used to do
   a single VLM pass over the camera frame — so "what's the weather?" got a scene
   description, never a real answer. Talk/conversation/wake turns (and the text
