@@ -610,12 +610,14 @@ body {
 }
 .composer:focus-within { border-color: var(--accent-soft); }
 .composer.recording { border-color: var(--accent); box-shadow: 0 0 18px var(--accent-glow); }
-.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chips { display: flex; gap: 6px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+.chips::-webkit-scrollbar { height: 0; }
 .chip {
   background: transparent; border: 1px solid var(--border);
   color: var(--muted); padding: 4px 10px; border-radius: var(--r-pill);
   font: 500 11.5px/1 'Geist', sans-serif; font-family: inherit; cursor: pointer;
   display: inline-flex; align-items: center; gap: 5px; transition: 140ms;
+  white-space: nowrap; flex: 0 0 auto;
 }
 .chip:hover { color: var(--text); border-color: var(--accent-soft); background: var(--accent-soft); }
 .chip svg { width: 11px; height: 11px; }
@@ -678,8 +680,11 @@ textarea#text::placeholder { color: var(--dim); }
 .sendbtn:disabled { background: var(--raised); color: var(--dim); cursor: not-allowed; transform: none; box-shadow: none; }
 .sendbtn svg { width: 16px; height: 16px; }
 
-.composer-foot {
-  display: flex; align-items: center; justify-content: space-between;
+/* idle: nothing to show here (Stop appears only while streaming) — collapse it
+   so the dock stays tight and uncluttered */
+.composer-foot { display: none; }
+.composer-foot.busy {
+  display: flex; align-items: center; justify-content: flex-end;
   font: 500 11px/1.2 'Geist Mono', monospace; color: var(--dim);
 }
 .composer-foot .stop {
@@ -1080,8 +1085,10 @@ textarea#text::placeholder { color: var(--dim); }
 /* bottom command dock */
 .composer.dock {
   position: fixed; left: 50%; transform: translateX(-50%); bottom: 14px;
-  width: min(720px, 94vw); z-index: 36;
-  background: var(--glass-fill); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur);
+  width: min(680px, 94vw); z-index: 36;
+  /* near-opaque dark scrim (matches the SYSTEMS rail) so the dock reads as a
+     solid frontier console, not a washed-out translucent panel over the feed */
+  background: rgba(11, 12, 15, 0.86); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur);
   border: 1px solid var(--border-strong); border-top-color: var(--glass-edge);
   box-shadow: 0 24px 70px -24px rgba(0,0,0,0.75);
 }
@@ -1371,12 +1378,12 @@ textarea#text::placeholder { color: var(--dim); }
 
     <div class='composer dock' id=composer>
       <div class=chips id=chips>
-        <button class=chip data-cmd=look><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z'/><circle cx='12' cy='12' r='3'/></svg>What do you see</button>
-        <button class=chip data-cmd=read><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20'/></svg>Read any text</button>
-        <button class=chip data-cmd=count><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M4 4h4v4H4zM10 4h4v4h-4zM16 4h4v4h-4zM4 10h4v4H4zM10 10h4v4h-4zM16 10h4v4h-4zM4 16h4v4H4zM10 16h4v4h-4zM16 16h4v4h-4z'/></svg>Count objects</button>
-        <button class=chip data-cmd=identify><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='10'/><path d='M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3'/><path d='M12 17h.01'/></svg>What am I looking at</button>
-        <button class='chip chip-inv' data-cmd=investigate title='Zoom in, identify, and look it up on the web'><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='11' cy='11' r='7'/><path d='m21 21-4.3-4.3'/><path d='M11 8v6M8 11h6'/></svg>Investigate &amp; zoom</button>
-        <button class='chip' data-cmd=scan title='Detect & track all entities in view (open-vocab)'><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2'/><line x1='3' y1='12' x2='21' y2='12'/></svg>Scan field</button>
+        <button class=chip data-cmd=look><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z'/><circle cx='12' cy='12' r='3'/></svg>Describe</button>
+        <button class=chip data-cmd=read><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20'/></svg>Read text</button>
+        <button class=chip data-cmd=count><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M4 4h4v4H4zM10 4h4v4h-4zM16 4h4v4h-4zM4 10h4v4H4zM10 10h4v4h-4zM16 10h4v4h-4zM4 16h4v4H4zM10 16h4v4h-4zM16 16h4v4h-4z'/></svg>Count</button>
+        <button class=chip data-cmd=identify><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='10'/><path d='M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3'/><path d='M12 17h.01'/></svg>Identify</button>
+        <button class='chip chip-inv' data-cmd=investigate title='Zoom in, identify, and look it up on the web'><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='11' cy='11' r='7'/><path d='m21 21-4.3-4.3'/><path d='M11 8v6M8 11h6'/></svg>Investigate</button>
+        <button class='chip' data-cmd=scan title='Detect & track all entities in view (open-vocab)'><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2'/><line x1='3' y1='12' x2='21' y2='12'/></svg>Scan</button>
       </div>
       <div class=input-row>
         <div class=orb-wrap id=orbwrap>
@@ -1390,7 +1397,6 @@ textarea#text::placeholder { color: var(--dim); }
         </button>
       </div>
       <div class=composer-foot id=composerfoot>
-        <span><kbd class=kbd>/</kbd> <kbd class=kbd>Enter</kbd> <kbd class=kbd>Space</kbd> <kbd class=kbd>L</kbd> live <kbd class=kbd>W</kbd> wake <kbd class=kbd>?</kbd> help</span>
         <button class=stop id=stopbtn>Stop</button>
       </div>
       <div class=palette id=palette></div>
