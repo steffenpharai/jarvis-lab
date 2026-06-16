@@ -2034,17 +2034,65 @@ def duckduckgo(query: str) -> dict:
     }
 
 
+# ----- device location (the Orin has no GPS — derive from the public IP) -------
+_DEVICE_LOC: dict = {"data": None, "ts": 0.0}
+_DEVICE_LOC_TTL = 6 * 3600
+
+
+def get_device_location(force: bool = False) -> dict:
+    """City/region/country/lat/lon/timezone from the public IP, cached ~6h."""
+    now = time.time()
+    if (not force and _DEVICE_LOC["data"]
+            and now - _DEVICE_LOC["ts"] < _DEVICE_LOC_TTL):
+        return _DEVICE_LOC["data"]
+    try:
+        r = HTTP.get("https://ipinfo.io/json")
+        r.raise_for_status()
+        d = r.json()
+        loc = (d.get("loc") or "").split(",")
+        data = {
+            "city": d.get("city"), "region": d.get("region"),
+            "country": d.get("country"),
+            "lat": float(loc[0]) if len(loc) == 2 else None,
+            "lon": float(loc[1]) if len(loc) == 2 else None,
+            "timezone": d.get("timezone"),
+        }
+        _DEVICE_LOC["data"] = data
+        _DEVICE_LOC["ts"] = now
+        return data
+    except Exception:  # noqa: BLE001
+        return _DEVICE_LOC["data"] or {}
+
+
+def device_location_str() -> str:
+    d = get_device_location()
+    return ", ".join(p for p in (d.get("city"), d.get("region"),
+                                 d.get("country")) if p) if d else ""
+
+
+@tool(
+    "where_am_i",
+    description="The device's own location (city, region, country, lat/lon, "
+                "timezone) from its public IP. Use for 'where am I' and as the "
+                "default place for weather/time/local questions.",
+    category="web",
+    schema={"type": "object", "properties": {}},
+)
+def where_am_i() -> dict:
+    return get_device_location() or {"error": "location unavailable"}
+
+
 @tool(
     "weather",
-    description="Current weather for a location, via wttr.in.",
+    description="Current weather. Omit location to use the device's own location.",
     category="web",
     schema={
         "type": "object",
         "properties": {"location": {"type": "string"}},
-        "required": ["location"],
     },
 )
-def weather(location: str) -> dict:
+def weather(location: str = "") -> dict:
+    location = (location or "").strip() or device_location_str()
     r = HTTP.get(f"https://wttr.in/{urllib.parse.quote(location)}",
                  params={"format": "j1"})
     r.raise_for_status()
@@ -3374,7 +3422,7 @@ DEFAULT_AGENT_ALLOW: set[str] = {
     "random_choice", "regex_test", "json_query", "decode", "password",
     "uuid", "cron_next",
     # web (no api keys)
-    "weather", "forecast", "wikipedia", "duckduckgo", "web_search",
+    "where_am_i", "weather", "forecast", "wikipedia", "duckduckgo", "web_search",
     "hn_top", "hn_search", "geocode", "reverse_geocode",
     "github_repo", "currency_rate", "dns", "is_online", "arxiv",
     "rss_fetch", "summarize_page", "pdf_to_text", "whois",
@@ -3526,6 +3574,12 @@ def agent_prompt(allowlist: set | None = None,
             lines.append(prof)
     lines.append(AGENT_SYSTEM)
     lines.append("")
+    loc = device_location_str()
+    if loc:
+        lines.append(f"Current location: {loc}. Use it as the default place for "
+                     f"weather, time, and local questions unless the user names "
+                     f"another place.")
+        lines.append("")
     by_cat: dict[str, list[str]] = {}
     for name in sorted(allowed):
         t = TOOLS._tools.get(name)
