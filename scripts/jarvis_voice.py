@@ -1318,6 +1318,16 @@ def run_turn(ctx: TurnCtx, payload: dict) -> None:
             ctx.emit({"phase": "transcribing"})
             transcription = transcribe(work / "user.wav")
             timings["transcribe_s"] = round(time.monotonic() - t, 2); t = time.monotonic()
+            # Conversation mode: if we heard nothing, don't invent a scene reply
+            # (that would loop "describe the scene" forever). Signal the client so
+            # it can keep listening or gracefully end the conversation.
+            if payload.get("convo") and len((transcription or "").strip()) < 2:
+                ctx.emit({"phase": "no_speech"})
+                ctx.emit({"phase": "done", "result": {
+                    "turn_id": tid, "kind": "talk", "reply": "",
+                    "transcription": "", "no_speech": True, "timings": timings,
+                }})
+                return
             question = transcription or "Describe what you see briefly."
             allow_reuse = False
         elif kind == "text":
@@ -1837,7 +1847,7 @@ def _wake_callback(score: float) -> None:
     ctx = register_turn(tid, "talk")
     threading.Thread(
         target=run_turn,
-        args=(ctx, {"kind": "talk", "seconds": 6, "wake_score": score}),
+        args=(ctx, {"kind": "talk", "seconds": 8, "convo": True, "wake_score": score}),
         daemon=True,
     ).start()
     # Broadcast wake event to all live subscribers so the UI lights up

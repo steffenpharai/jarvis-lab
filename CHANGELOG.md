@@ -3,6 +3,19 @@
 Pushed the on-device frontier further and hardened the 8 GB engineering.
 Highlights (newest first):
 
+- **Hands-free conversation mode.** No more tapping the orb for every reply.
+  Toggle **Converse** (or say "Hey Jarvis", or `C` / `/converse`) and Jarvis
+  listens, you talk, it replies, then it listens again — a continuous back-and-
+  forth. Each utterance is endpointed by the recorder's existing silence-VAD
+  (~1.2 s), and after each spoken reply the client waits for the TTS to finish
+  before re-opening the mic (so it never records its own voice). It ends cleanly
+  on a stop phrase ("stop" / "goodbye" / "that's all" / "thank you Jarvis"), two
+  silent turns in a row, the `Esc` key, or toggling off. Backend: talk turns
+  carry a `convo` flag; on silence they emit `no_speech` and short-circuit
+  *before* the VLM (so silence no longer triggers a bogus "describe the scene"
+  reply, and the 8 GB box doesn't waste an inference). The Converse control glows
+  cyan ("listening for you") while active.
+
 - **Orb polish — readable captions + eco visibility.** The "tap to talk" hint and
   Jarvis's spoken-reply caption now sit on a dark blurred plate (were unreadable
   dim text straight over the camera feed); the hint also brightened + dropped clear

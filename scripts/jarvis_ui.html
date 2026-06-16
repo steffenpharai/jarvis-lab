@@ -382,6 +382,9 @@ body {
 .live-toggle.on .dotpip { background: white; animation: pulse 1.2s ease-in-out infinite; }
 .live-toggle.agent-toggle { right: auto; left: 12px; }
 .live-toggle.agent-toggle.on { background: var(--accent); border-color: var(--accent); color: white; box-shadow: 0 0 14px var(--accent-glow); }
+.live-toggle.convo-toggle { right: auto; left: 12px; }
+.live-toggle.convo-toggle.on { background: #38bdf8; border-color: #38bdf8; color: #04121c; box-shadow: 0 0 16px rgba(56,189,248,0.55); }
+.live-toggle.convo-toggle.on .dotpip { background: #04121c; }
 
 /* wake indicator inside HUD */
 .wake-pill {
@@ -1042,6 +1045,7 @@ textarea#text::placeholder { color: var(--dim); }
 /* mode toggles → top-left stack under the strip */
 .live-toggle { position: fixed !important; top: 50px; left: 14px; bottom: auto !important; right: auto !important; z-index: 34; }
 .live-toggle.agent-toggle { top: 88px; }
+.live-toggle.convo-toggle { top: 126px; }
 /* wake pill → top-center */
 .wake-pill { top: 52px !important; left: 50% !important; bottom: auto !important; transform: translateX(-50%); }
 
@@ -1395,6 +1399,9 @@ textarea#text::placeholder { color: var(--dim); }
       </button>
       <button class='live-toggle agent-toggle' id=agenttoggle title='Agent mode: route turns through the tool-using loop'>
         <span class=dotpip></span><span>Agent</span>
+      </button>
+      <button class='live-toggle convo-toggle' id=convotoggle title='Conversation mode: hands-free back-and-forth — talk, it replies, then listens again (say “stop” or toggle off to end)'>
+        <span class=dotpip></span><span>Converse</span>
       </button>
       <div class='live-caption' id=livecap></div>
       <button class=talkbtn id=talkbtn aria-label='Talk to Jarvis' title='Tap to talk · or say “Hey Jarvis”'></button>
@@ -2675,6 +2682,7 @@ function attachTurn(turn_id, jmsg, kind) {
       detachAudioMeter();
       setLive('idle', 'transcribing'); phaseBadge.textContent = 'transcribing';
     } else if (ph === 'capturing') {
+      if (m.transcription !== undefined) convoTranscript = m.transcription || '';
       setLive('recording', 'looking'); phaseBadge.textContent = 'looking';
       reasonPush('act', 'capture frame');
       if (m.question && kind === 'regenerate') {
@@ -2717,8 +2725,22 @@ function attachTurn(turn_id, jmsg, kind) {
     } else if (ph === 'error') {
       bubble.innerHTML = '<em>error: ' + escapeHtml(m.error) + '</em>';
       phaseBadge.textContent = 'error'; toast(m.error, 'error');
+    } else if (ph === 'no_speech') {
+      // conversation mode heard nothing — drop the empty bubbles quietly
+      jmsg.dataset.noSpeech = '1';
     } else if (ph === 'done') {
-      const res = m.result;
+      const res = m.result || {};
+      // no-speech turn (conversation mode): remove the placeholder bubbles, no reply
+      if (res.no_speech || jmsg.dataset.noSpeech) {
+        const pu = jmsg.previousElementSibling;
+        if (pu && pu.classList.contains('user-msg')) pu.remove();
+        jmsg.remove();
+        es.close(); detachAudioMeter();
+        orb.classList.remove('recording'); composer.classList.remove('recording');
+        setLive('idle', 'idle'); isStreaming = false; setComposerBusy(false); currentTurn = null;
+        notifyTurnComplete(res, kind);
+        return;
+      }
       raw = res.reply || raw;
       bubble.dataset.raw = raw;
       finalizeReplyMarkdown(bubble, raw);
@@ -2756,6 +2778,7 @@ function attachTurn(turn_id, jmsg, kind) {
       detachAudioMeter();
       isStreaming = false; setComposerBusy(false);
       currentTurn = null;
+      notifyTurnComplete(res, kind);
     }
   };
   es.onerror = () => {
@@ -2765,8 +2788,58 @@ function attachTurn(turn_id, jmsg, kind) {
     setLive('idle', 'idle');
     orb.classList.remove('recording'); composer.classList.remove('recording');
     detachAudioMeter();
+    notifyTurnComplete(null, kind);
   };
 }
+
+/* ===== conversation mode: hands-free back-and-forth =====
+   Press Converse (or say "Hey Jarvis") → it listens, you talk, it replies, then
+   listens again — no clicking. Ends on "stop"/"goodbye", two silent turns, or
+   toggling off. The recorder's VAD endpoints each utterance on ~1.2s of silence. */
+let convoOn = false, convoEmpty = 0, convoTranscript = '';
+const CONVO_STOP = /\b(stop|goodbye|good bye|bye now|that'?s all|that is all|never ?mind|exit|end conversation|stop listening|thank you jarvis|thanks jarvis)\b/i;
+const convotoggle = document.getElementById('convotoggle');
+
+function setConvo(on, reason) {
+  on = !!on;
+  if (on === convoOn) { if (on && !isStreaming) convoListen(); return; }
+  convoOn = on; convoEmpty = 0;
+  if (convotoggle) {
+    convotoggle.classList.toggle('on', on);
+    const lbl = convotoggle.querySelector('span:nth-child(2)');
+    if (lbl) lbl.textContent = on ? 'Conversing' : 'Converse';
+  }
+  document.body.classList.toggle('convo-on', on);
+  if (on) { toast('Conversation mode — just talk, no clicking', 'wake'); convoListen(); }
+  else { setLive('idle', 'idle'); if (reason) toast(reason, 'ok'); }
+}
+function convoListen() {
+  if (!convoOn || isStreaming) return;
+  doTurn({ kind: 'talk', convo: true, seconds: 12 });
+}
+function convoAfterReply() {
+  if (!convoOn) return;
+  // wait for the queued TTS to finish playing, then listen again
+  let wait = 350;
+  try { if (audioCtx && nextStartTime > audioCtx.currentTime) wait = (nextStartTime - audioCtx.currentTime) * 1000 + 400; } catch {}
+  setTimeout(() => { if (convoOn && !isStreaming) convoListen(); }, Math.min(Math.max(wait, 300), 30000));
+}
+// called by attachTurn when any talk turn finishes (reply, no_speech, or error)
+function notifyTurnComplete(res, kind) {
+  if (!convoOn || kind !== 'talk') return;
+  if (!res || res.error) { setConvo(false, 'Conversation ended'); return; }
+  if (res.no_speech) {
+    convoEmpty++;
+    if (convoEmpty >= 2) { setConvo(false, 'No reply heard — say “Hey Jarvis” or tap to resume'); return; }
+    setLive('idle', 'listening…');
+    setTimeout(() => { if (convoOn && !isStreaming) convoListen(); }, 450);
+    return;
+  }
+  convoEmpty = 0;
+  if (CONVO_STOP.test(convoTranscript || '')) { setConvo(false, 'Ending conversation'); return; }
+  convoAfterReply();
+}
+if (convotoggle) convotoggle.onclick = () => setConvo(!convoOn);
 
 /* ===== Iron-Man Vision: investigate (locate -> zoom -> identify -> web) ===== */
 const reticle = $('#reticle'), rlabel = $('#rlabel');
@@ -3162,6 +3235,7 @@ const COMMANDS = [
   { cmd: 'voice',    desc: 'Voice mode',                   run: () => doTurn({kind: 'talk'}) },
   { cmd: 'live',     desc: 'Toggle Live Mode',             run: () => toggleLive() },
   { cmd: 'wake',     desc: 'Toggle wake word',             run: () => toggleWake() },
+  { cmd: 'converse', desc: 'Hands-free conversation mode', run: () => setConvo(!convoOn) },
   { cmd: 'clear',    desc: 'Clear conversation memory',    run: () => clearConv() },
   { cmd: 'export',   desc: 'Download conversation as Markdown', run: () => exportConv() },
   { cmd: 'settings', desc: 'Open settings drawer',         run: () => openDrawer() },
@@ -3271,6 +3345,7 @@ function attachLiveStream() {
         const jmsg = makeJarvisMsg('talk');
         switchPane('conv');
         attachTurn(m.turn_id, jmsg, 'talk');
+        if (!convoOn) setConvo(true);   // "Hey Jarvis" enters hands-free conversation
       }
     } else if (m.event === 'error') {
       toast('Live: ' + m.error, 'error');
@@ -3928,7 +4003,8 @@ document.addEventListener('keydown', (e) => {
   if (e.key === ' ' && !isStreaming) { e.preventDefault(); doTurn({kind: 'snap'}); }
   else if (e.key === '/') { e.preventDefault(); text.focus(); text.value = '/'; openPalette(''); }
   else if (e.key === 'Escape') {
-    if (shortcutsModal.classList.contains('open')) shortcutsModal.classList.remove('open');
+    if (convoOn) { setConvo(false, 'Conversation paused'); if (isStreaming) stopCurrent(); }
+    else if (shortcutsModal.classList.contains('open')) shortcutsModal.classList.remove('open');
     else if (nanoModal.classList.contains('open')) closeNano();
     else if (datasetModal.classList.contains('open')) closeDataset();
     else if (isStreaming) stopCurrent();
@@ -3937,6 +4013,7 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === '?') { e.preventDefault(); shortcutsModal.classList.add('open'); }
   else if (e.key === 'l' || e.key === 'L') { e.preventDefault(); toggleLive(); }
   else if (e.key === 'w' || e.key === 'W') { e.preventDefault(); toggleWake(); }
+  else if (e.key === 'c' || e.key === 'C') { e.preventDefault(); setConvo(!convoOn); }
   else if (e.key === 'r' || e.key === 'R') { e.preventDefault(); if (!isStreaming) doTurn({kind: 'regenerate'}); }
   else if (e.key === 'p' || e.key === 'P') {
     e.preventDefault();
