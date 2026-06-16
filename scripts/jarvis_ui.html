@@ -1051,13 +1051,18 @@ textarea#text::placeholder { color: var(--dim); }
   transform: translate(-50%, -50%) !important;
   width: clamp(190px, 27vw, 340px) !important; height: clamp(190px, 27vw, 340px) !important;
   z-index: 8; opacity: 1 !important;
-  /* soft dark "presence well" so the additive orb reads against the camera feed
-     (additive blending over a bright feed washes out — this gives it contrast) */
+  /* dark "lens" backdrop. The orb is additive over a TRANSPARENT canvas, so over
+     the bright camera feed the faint synapse lines composite as a dark wireframe
+     and the core washes out. A near-opaque dark disc behind the canvas removes the
+     bright backdrop → additive glow pops and the dark-line artifact disappears.
+     Kept dark across the full neural-cloud extent, feathered to transparent at the rim. */
   border-radius: 50%;
   background: radial-gradient(circle at 50% 50%,
-    rgba(4,8,14,0.55) 0%, rgba(4,8,14,0.40) 30%, rgba(4,8,14,0.16) 52%, rgba(4,8,14,0) 70%);
+    rgba(3,6,11,0.92) 0%, rgba(3,6,11,0.90) 48%, rgba(3,6,11,0.84) 70%,
+    rgba(3,6,11,0.55) 85%, rgba(3,6,11,0.18) 93%, transparent 100%);
+  box-shadow: 0 0 60px 18px rgba(3,6,11,0.55);   /* feather the disc into the feed */
 }
-@media (prefers-reduced-motion: reduce) { .presence { background: radial-gradient(circle at 50% 50%, rgba(4,8,14,0.45) 0%, rgba(4,8,14,0) 68%); } }
+@media (prefers-reduced-motion: reduce) { .presence { box-shadow: none; } }
 .talkbtn {
   position: fixed; top: 38%; left: 50%; transform: translate(-50%, -50%);
   width: clamp(170px, 24vw, 320px); height: clamp(170px, 24vw, 320px);
