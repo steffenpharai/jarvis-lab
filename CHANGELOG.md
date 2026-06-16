@@ -3,15 +3,15 @@
 Pushed the on-device frontier further and hardened the 8 GB engineering.
 Highlights (newest first):
 
-- **Agent turns go text-only unless the question is visual (stops VLM crashes).**
-  The agent loop was feeding the camera image into *every* VLM call (`use_frame`
-  always on) — the ~800 MB mmproj encode is the 8 GB box's main SIGABRT trigger, so
-  "what's the weather?" was crashing the VLM mid-turn (tool ran, then it died with
-  no answer). Now `run_turn` attaches the frame only for genuinely visual questions
-  (`_needs_vision()` cue list); weather/web/time/lights/etc. run text-only — lighter,
-  faster, and crash-free. The agent can still call a vision tool (investigate /
-  zoom_into / read_all_text) on demand. Verified: "weather in Paris" → vision=false,
-  weather tool, full spoken answer, no crash.
+- **Agent keeps its eyes, but encodes the frame once per turn (stops VLM crashes).**
+  The agent loop fed the camera image into *every* VLM round — the ~800 MB mmproj
+  encode is the 8 GB box's main SIGABRT trigger, so a multi-step turn ("what's the
+  weather?") re-encoded the frame each round and crashed the VLM mid-turn (tool ran,
+  then it died with no answer). Fix: vision stays **always on** — the agent sees the
+  current scene on the first VLM call of every turn — but `agentic_loop` then strips
+  the image from the follow-up tool-result rounds, so it's at most one image-encode
+  per turn (same load as a normal vision turn) instead of N. Verified: "weather in
+  Berlin" → tool + full answer, no crash; "what do you see?" → describes the scene.
 - **The UI "Wake" button now speaks a confirmation.** Clicking Wake used to be a
   silent power transition (only *saying* "wake up" spoke back). It now warms the VLM
   and immediately says "Waking up, sir — fully online in a moment" via an instant

@@ -3735,6 +3735,13 @@ def agentic_loop(
         for k in usage_total:
             usage_total[k] += int(usage.get(k) or 0)
 
+        # Keep "eyes" on the FIRST call of the turn, then drop the image so the
+        # follow-up tool-result rounds run text-only. Re-encoding the ~800MB mmproj
+        # frame on every round is what crashes the 8GB box; one encode per turn
+        # (same as a normal vision turn) keeps vision always-on but stable.
+        if round_i == 0 and use_frame and isinstance(messages[1].get("content"), list):
+            messages[1]["content"] = question
+
         # Multi-tool: parse ALL <tool_call> tags emitted in this response.
         calls = parse_all_tool_calls(text, max_calls=5)
         if not calls:

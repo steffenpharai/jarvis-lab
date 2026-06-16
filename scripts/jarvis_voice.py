@@ -1350,30 +1350,6 @@ def _greeting_text() -> str:
     return random.choice(_GREETINGS)
 
 
-# Decide whether an agent turn needs the camera frame. Feeding the ~800MB mmproj
-# image into every agent VLM call is the main trigger for the 8GB box's SIGABRT
-# crashes — so only attach it for genuinely visual questions; weather/web/time/
-# lights/etc. run text-only (lighter, faster, far more stable). The agent can
-# still call a vision tool (investigate/zoom_into/read_all_text) on demand.
-_VISION_CUES = (
-    "what do you see", "what can you see", "what are you looking", "look at",
-    "looking at", " see ", "do you see", "describe what", "what is this",
-    "what's this", "whats this", "what is that", "what's that", "what are these",
-    "what are those", "read this", "read that", "read the", "what does it say",
-    "what color", "what colour", "how many", "count the", "count how",
-    "what am i holding", "what am i wearing", "what i'm holding", "in front of me",
-    "on my desk", "on the desk", "on the table", "in the room", "identify this",
-    "identify that", "point at", "this object", "that object", "the camera",
-    "the scene", "what's in front", "whats in front", "in my hand", "hold up",
-    "holding up", "show you", "showing you", "this thing", "that thing",
-)
-
-
-def _needs_vision(question: str) -> bool:
-    q = (question or "").lower()
-    return any(c in q for c in _VISION_CUES)
-
-
 def run_turn(ctx: TurnCtx, payload: dict) -> None:
     tid = ctx.tid
     LAST_USER_ACTIVITY["ts"] = time.time()
@@ -1544,19 +1520,18 @@ def run_turn(ctx: TurnCtx, payload: dict) -> None:
                     "ok": (step.get("result") or {}).get("ok", False),
                 })
 
-            # Only feed the camera image to the agent for visual questions — the
-            # mmproj encode is the 8GB box's main crash trigger; weather/web/etc.
-            # run text-only. The agent can call a vision tool on demand otherwise.
-            agent_use_frame = _needs_vision(question)
-            ctx.emit({"phase": "agent_start", "max_steps": agent_max_steps,
-                      "vision": agent_use_frame})
+            # Always give the agent eyes — it sees the current scene on the first
+            # VLM call of every turn. agentic_loop then strips the image from the
+            # follow-up rounds so multi-step turns don't re-encode the ~800MB frame
+            # (the 8GB crash trigger). One encode per turn = vision always-on + stable.
+            ctx.emit({"phase": "agent_start", "max_steps": agent_max_steps})
             try:
                 ar = jarvis_tools.agentic_loop(
                     jarvis_tools.TOOLS._ctx,
                     question,
                     frame_path=work / "frame.jpg",
                     max_steps=agent_max_steps,
-                    use_frame=agent_use_frame,
+                    use_frame=True,
                     on_step=_on_step,
                 )
             except Exception as ae:
