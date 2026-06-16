@@ -21,9 +21,17 @@ exec $SBIN/llama-server \
   --mmproj    "$MMPROJ" \
   -ngl 999 \
   --ctx-size 4096 \
+  --parallel 1 \
+  --cache-ram 0 \
   --batch-size 512 \
   --ubatch-size 512 \
   --jinja \
   -fa on \
   --mmproj-offload \
   --host 127.0.0.1 --port 8080
+# --parallel 1: the dashboard serializes every VLM call (VLM_BUSY), so the
+#   auto-chosen 4 KV slots were pure waste of unified memory.
+# --cache-ram 0: disable llama.cpp's RAM prompt cache (was reserving up to 8 GiB
+#   of unified RAM) so the ~1.8 GB mmproj image buffer has contiguous room.
+# Together these stop the SEGV at "processing image..." WITHOUT shrinking the
+# image (full 512x384 detail retained).
