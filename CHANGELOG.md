@@ -3,6 +3,21 @@
 Pushed the on-device frontier further and hardened the 8 GB engineering.
 Highlights (newest first):
 
+- **Companion orb — per-state motion + power choreography.** The three.js
+  presence orb now reads as a presence reacting to *you*, not just a color swatch.
+  Each voice state has a distinct motion signature: **thinking** spins up into a
+  swirling halo *vortex* (the shell flattens into a fast-rotating disk),
+  **listening** is calm and attentive with a slow outward ripple every ~2.2 s,
+  **speaking** tracks the audio envelope faster for a lip-sync amplitude feel, and
+  **alert** throbs. A pooled additive **ripple-ring** system fires a **wake bloom**
+  the instant a turn opens and a bigger **ignition** ring when waking from eco.
+  Power state drives an `energy` factor wired off `/metrics` `power_state`: **eco**
+  dims + slows the orb into a dormant deep-breath, **waking** flares it back to
+  life, **full** is alive. Frame-rate-independent (delta-time integration),
+  `prefers-reduced-motion` freezes the spin/ripples, all additive blending (no
+  bloom), zero extra Jetson load. Bridge extended to `window.jarvisVoice.power`
+  + `window.orbPulse(kind)`.
+
 - **Power management — FULL / ECO / OFF + voice wake + auto-eco.** Three power
   states: ECO stops the VLM (the heat: ~20W/70°C → ~7.6W/cool) but keeps mic +
   wake word alive so voice can wake it; OFF (`poweroff`) can only be undone by

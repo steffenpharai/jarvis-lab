@@ -1720,7 +1720,7 @@ textarea#text::placeholder { color: var(--dim); }
 <script>
 'use strict';
 // bridge to the three.js voice orb (read by the WebGL module below)
-window.jarvisVoice = { level: 0, state: 'idle' };
+window.jarvisVoice = { level: 0, state: 'idle', power: 'full' };
 
 /* ===== JARVIS boot / power-on sequence (once per session, skippable) ===== */
 (function boot() {
@@ -1940,6 +1940,12 @@ function applyPower(m) {
   const b = $('#ecobanner'); if (!b) return;
   const st = m.power_state, tr = m.power_transition || '';
   window._ecoMode = (st === 'eco');
+  // orb power choreography bridge: eco = dormant/dim, waking = ignition spin-up.
+  const orbPower = tr ? (tr.startsWith('waking') ? 'waking' : tr.split(' ')[0]) : (st || 'full');
+  if (window.jarvisVoice && window.jarvisVoice.power !== orbPower) {
+    if (orbPower === 'waking' && window.orbPulse) window.orbPulse('ignite');
+    window.jarvisVoice.power = orbPower;
+  }
   // reflect on the NANO panel power buttons if open
   const pb = $('#nano-power-state'); if (pb) pb.textContent = (tr || st || 'full').toUpperCase();
   // topbar power pill
@@ -2319,6 +2325,8 @@ function setAmbient(state) {
   }
   _lastAmbient = state || 'idle';
   ambientEl.className = 'ambient on ' + (state || 'idle');
+  // rising edge into 'listening' (a turn just opened) → fire a wake bloom on the orb
+  if (window.orbPulse && state === 'listening' && window.jarvisVoice.state !== 'listening') window.orbPulse('wake');
   window.jarvisVoice.state = state || 'idle';
   refreshHint();
 }
@@ -3949,6 +3957,7 @@ try {
   const THREE = await import('three');
 
   const isMobile = matchMedia('(max-width: 640px)').matches;
+  const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const DPR = Math.min(window.devicePixelRatio || 1, isMobile ? 1.5 : 2);
   const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, powerPreference: 'high-performance' });
   renderer.setClearColor(0x000000, 0);
@@ -4026,34 +4035,112 @@ try {
     transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.5 }));
   glow.scale.set(4.5, 4.5, 1); scene.add(glow);
 
+  // --- expanding ripple rings (wake bloom / listening ripple / wake ignition) ---
+  // additive ring sprites that grow + fade; a small pool, oldest reused.
+  const rc = document.createElement('canvas'); rc.width = rc.height = 128;
+  const rx = rc.getContext('2d');
+  const rgrad = rx.createRadialGradient(64,64,0,64,64,64);
+  rgrad.addColorStop(0,'rgba(255,255,255,0)'); rgrad.addColorStop(0.62,'rgba(255,255,255,0)');
+  rgrad.addColorStop(0.80,'rgba(255,255,255,0.9)'); rgrad.addColorStop(0.93,'rgba(255,255,255,0.25)');
+  rgrad.addColorStop(1,'rgba(255,255,255,0)');
+  rx.fillStyle = rgrad; rx.beginPath(); rx.arc(64,64,64,0,Math.PI*2); rx.fill();
+  const ringTex = new THREE.CanvasTexture(rc);
+  const RING_POOL = isMobile ? 2 : 3;
+  const rings = [];
+  for (let i = 0; i < RING_POOL; i++) {
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: ringTex, color: curColor,
+      transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0 }));
+    s.scale.setScalar(0.1); s.userData = { age: Infinity, life: 1, grow: 5.5 };
+    scene.add(s); rings.push(s);
+  }
+  // public: fire a one-shot ripple. kind 'wake' (calm), 'ignite' (bigger/longer), 'pulse'.
+  window.orbPulse = function (kind) {
+    if (reduceMotion) return;
+    const cfg = kind === 'ignite' ? { life: 1.5, grow: 7.5 } : kind === 'wake' ? { life: 1.0, grow: 5.5 } : { life: 0.8, grow: 4.5 };
+    let pick = rings[0];
+    for (const s of rings) { if (s.userData.age >= s.userData.life) { pick = s; break; } if (s.userData.age > pick.userData.age) pick = s; }
+    pick.userData.age = 0; pick.userData.life = cfg.life; pick.userData.grow = cfg.grow;
+  };
+
   size();
   new ResizeObserver(size).observe(canvas);
 
-  let smoothLevel = 0, running = true, t0 = performance.now();
+  // eased animation state (frame-rate independent; cumulative angles so speeds can vary)
+  let smoothLevel = 0, energy = 1, vortex = 0, haloTilt = 0;
+  let rotCore = 0, rotHalo = 0, rotHaloZ = 0, lastRipple = -99;
+  const rm = reduceMotion ? 0 : 1;           // motion gate
+  let running = true, t0 = performance.now(), tPrev = t0;
   document.addEventListener('visibilitychange', () => {
-    running = !document.hidden; if (running) { t0 = performance.now(); loop(); }
+    running = !document.hidden; if (running) { t0 = performance.now(); tPrev = t0; loop(); }
   });
   function loop() {
     if (!running) return;
     requestAnimationFrame(loop);
-    const now = performance.now(); const t = (now - t0) / 1000;
-    const vs = window.jarvisVoice || { level: 0, state: 'idle' };
-    // smooth level; idle gets a gentle breathing baseline
+    const now = performance.now();
+    const dt = Math.min(0.05, (now - tPrev) / 1000); tPrev = now;
+    const t = (now - t0) / 1000;
+    const vs = window.jarvisVoice || { level: 0, state: 'idle', power: 'full' };
+    const state = vs.state || 'idle', power = vs.power || 'full';
+
+    // ENERGY from power state: eco = dormant/dim, waking = bright spin-up, full = alive
+    const eTarget = power === 'eco' ? 0.18
+      : power === 'waking' ? 1.18
+      : (power === 'shutting' || power === 'rebooting') ? 0.12 : 1;
+    energy += (eTarget - energy) * Math.min(1, dt * 2.5);
+
+    // LEVEL — speaking tracks the envelope faster (lip-sync feel); eco dampens amplitude
     const target = vs.level || 0;
-    smoothLevel += (target - smoothLevel) * 0.18;
-    const idleBreath = 0.06 * (0.5 + 0.5 * Math.sin(t * 1.2));
-    const lvl = Math.min(1, smoothLevel * 1.6 + (vs.state === 'idle' ? idleBreath : 0.04));
-    // ease color toward state
-    const tc = COLORS[vs.state] || COLORS.idle;
-    curColor.lerp(tc, 0.06);
+    smoothLevel += (target - smoothLevel) * (state === 'speaking' ? 0.32 : 0.18);
+    const breathHz = power === 'eco' ? 0.5 : 1.2;
+    const breathAmp = power === 'eco' ? 0.09 : 0.06;
+    const idleBreath = breathAmp * (0.5 + 0.5 * Math.sin(t * breathHz));
+    let lvl = Math.min(1, smoothLevel * (state === 'speaking' ? 2.4 : 1.6)
+      + ((state === 'idle' || state === 'listening') ? idleBreath : 0.04));
+    lvl *= energy;
+    if (rm && state === 'alert') lvl = Math.min(1, lvl + 0.18 * (0.5 + 0.5 * Math.sin(t * 9)));
+
+    // COLOR ease toward state
+    curColor.lerp(COLORS[state] || COLORS.idle, 0.06);
+
+    // ROTATION / motion signature per state
+    let coreSpd, haloSpd, tiltTarget, vortexTarget;
+    if (state === 'thinking')      { coreSpd = 0.6;  haloSpd = -0.95; tiltTarget = 1.15; vortexTarget = 1; }   // vortex swirl
+    else if (state === 'listening'){ coreSpd = 0.14; haloSpd = -0.12; tiltTarget = 0;    vortexTarget = 0; }   // calm, attentive
+    else if (state === 'speaking') { coreSpd = 0.32; haloSpd = -0.30; tiltTarget = 0;    vortexTarget = 0; }
+    else if (state === 'alert')    { coreSpd = 0.9;  haloSpd = -1.10; tiltTarget = 0.4;  vortexTarget = 0.4; }
+    else                           { coreSpd = 0.25; haloSpd = -0.18; tiltTarget = 0;    vortexTarget = 0; }
+    const espd = (0.35 + 0.65 * energy) * rm;   // eco slows everything; reduced-motion freezes spin
+    rotCore += coreSpd * espd * dt;
+    rotHalo += haloSpd * espd * dt;
+    rotHaloZ += 0.05 * espd * dt;
+    vortex += (vortexTarget * rm - vortex) * Math.min(1, dt * 3);
+    haloTilt += (tiltTarget * rm - haloTilt) * Math.min(1, dt * 3);
+
     coreMat.uniforms.uTime.value = t;
     coreMat.uniforms.uLevel.value = lvl;
     pMat.color.copy(curColor); glow.material.color.copy(curColor);
-    glow.material.opacity = 0.35 + lvl * 0.5;
-    pMat.opacity = 0.5 + lvl * 0.4;
-    core.rotation.y = t * 0.25; core.rotation.x = t * 0.12;
-    halo.rotation.y = -t * 0.18; halo.rotation.z = t * 0.05;
-    const s = 1 + lvl * 0.18; core.scale.setScalar(s);
+    glow.material.opacity = (0.35 + lvl * 0.5) * energy;
+    pMat.opacity = (0.5 + lvl * 0.4) * energy;
+    core.rotation.y = rotCore; core.rotation.x = rotCore * 0.48;
+    halo.rotation.y = rotHalo; halo.rotation.z = rotHaloZ; halo.rotation.x = haloTilt;
+    halo.scale.set(1, 1 - vortex * 0.45, 1);   // tightens the halo into a spinning disk while thinking
+    core.scale.setScalar((1 + lvl * 0.18) * (0.82 + 0.18 * energy));
+
+    // listening auto-ripple (a slow attentive pulse outward)
+    if (rm && state === 'listening' && energy > 0.5 && (t - lastRipple) > 2.2) { lastRipple = t; window.orbPulse('pulse'); }
+
+    // advance ripple rings
+    for (const sp of rings) {
+      const u = sp.userData;
+      if (u.age < u.life) {
+        u.age += dt;
+        const k = u.age / u.life;
+        sp.scale.setScalar(1.2 + k * u.grow);
+        sp.material.opacity = Math.max(0, 1 - k) * 0.5 * energy;
+        sp.material.color.copy(curColor);
+      } else if (sp.material.opacity !== 0) { sp.material.opacity = 0; }
+    }
+
     renderer.render(scene, cam);
   }
   loop();
