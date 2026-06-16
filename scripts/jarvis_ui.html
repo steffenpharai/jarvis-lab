@@ -2620,12 +2620,34 @@ function attachTurn(turn_id, jmsg, kind) {
 const reticle = $('#reticle'), rlabel = $('#rlabel');
 let lastInv = null;  // {bbox, subject} for progressive "look closer"
 
+// The feed <img> is object-fit:cover, so the visible image is a scaled+cropped
+// subregion of the element. Map between element coords and image-normalised
+// coords through that transform — otherwise the crop (image space) and the
+// reticle (element space) diverge.
+function _coverMap() {
+  const rect = liveimg.getBoundingClientRect();
+  const iw = liveimg.naturalWidth || 1280, ih = liveimg.naturalHeight || 720;
+  const s = Math.max(rect.width / iw, rect.height / ih);  // cover scale
+  return { rect, iw, ih, s, offX: (rect.width - iw * s) / 2, offY: (rect.height - ih * s) / 2 };
+}
+function elemToImg(clientX, clientY) {  // screen px -> image-normalised [0..1]
+  const m = _coverMap();
+  const nx = ((clientX - m.rect.left - m.offX) / m.s) / m.iw;
+  const ny = ((clientY - m.rect.top - m.offY) / m.s) / m.ih;
+  return [Math.max(0, Math.min(1, nx)), Math.max(0, Math.min(1, ny))];
+}
+
 function showReticle(bbox, locked, label) {
   if (!bbox) bbox = [0, 0, 1, 1];
-  reticle.style.left = (bbox[0] * 100) + '%';
-  reticle.style.top = (bbox[1] * 100) + '%';
-  reticle.style.width = (bbox[2] * 100) + '%';
-  reticle.style.height = (bbox[3] * 100) + '%';
+  // image-normalised bbox -> element % (inverse cover transform) so the box
+  // sits exactly over the region that was cropped
+  const m = _coverMap();
+  const px = bbox[0] * m.iw * m.s + m.offX, py = bbox[1] * m.ih * m.s + m.offY;
+  const pw = bbox[2] * m.iw * m.s, ph = bbox[3] * m.ih * m.s;
+  reticle.style.left = (px / m.rect.width * 100) + '%';
+  reticle.style.top = (py / m.rect.height * 100) + '%';
+  reticle.style.width = (pw / m.rect.width * 100) + '%';
+  reticle.style.height = (ph / m.rect.height * 100) + '%';
   reticle.classList.add('on');
   reticle.classList.toggle('locked', !!locked);
   if (label != null) rlabel.textContent = label;
@@ -2960,13 +2982,15 @@ $('#intelclose').onclick = closeIntel;
 liveimg.addEventListener('click', (e) => {
   if (isStreaming) return;
   const rect = liveimg.getBoundingClientRect();
-  const nx = (e.clientX - rect.left) / rect.width;
-  const ny = (e.clientY - rect.top) / rect.height;
+  // on-screen marker stays where the user tapped (element %)
+  const ex = (e.clientX - rect.left) / rect.width, ey = (e.clientY - rect.top) / rect.height;
   const m = document.createElement('div');
   m.className = 'tap-marker';
-  m.style.left = (nx * 100) + '%'; m.style.top = (ny * 100) + '%';
+  m.style.left = (ex * 100) + '%'; m.style.top = (ey * 100) + '%';
   feedwrap.appendChild(m);
   setTimeout(() => m.remove(), 1000);
+  // ...but the point sent for cropping is in IMAGE coords (cover transform)
+  const [nx, ny] = elemToImg(e.clientX, e.clientY);
   // Tap-to-investigate: the Iron-Man "enhance there" gesture — zoom in,
   // identify, and look it up. Shift/Alt-click = quick describe-only.
   if (e.shiftKey || e.altKey) doTurn({kind: 'point', point: [nx, ny]});
