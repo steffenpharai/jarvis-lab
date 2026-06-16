@@ -1,8 +1,12 @@
 [Unit]
 Description=Jarvis dashboard + voice loop + live mode + wake word
 After=jarvis-vlm.service network-online.target sound.target
-Requires=jarvis-vlm.service
-Wants=network-online.target
+# Wants (not Requires): the dashboard depends on the VLM at boot (After= + the
+# /health ExecStartPre gate) but must SURVIVE a VLM restart — the self-healing
+# memory watchdog refreshes jarvis-vlm under pressure, and a hard Requires= would
+# cascade-restart the whole dashboard. jarvis_voice degrades gracefully when the
+# VLM is down (_VLM_UP flag).
+Wants=jarvis-vlm.service network-online.target
 
 [Service]
 Type=simple

@@ -3406,6 +3406,12 @@ function renderNano(d) {
   $('#nano-turbo').classList.toggle('active', !!meta.jetson_clocks);
   const tempRGB = t => t > 80 ? '239,68,68' : (t > 65 ? '245,158,11' : '74,222,128');
   let h = '';
+  // self-healing watchdog status (auto-refreshes the VLM when RAM collapses)
+  const ar = d.autorefresh || {};
+  h += `<div style="display:flex;justify-content:space-between;align-items:center;margin:0 0 8px;padding-bottom:8px;border-bottom:1px solid var(--border)">
+    <span style="color:var(--muted)">SELF-HEAL <b style="color:${ar.enabled ? 'var(--ok)' : 'var(--dim)'}">${ar.enabled ? 'ON' : 'OFF'}</b> · ${ar.refreshes || 0} auto-refresh · trigger &lt;${ar.min_avail_mb || 0}MB</span>
+    <button class=chip id=nano-heal onclick="window.nanoToggleHeal(${ar.enabled ? 'false' : 'true'})" style="font-size:10px;padding:2px 8px">${ar.enabled ? 'disable' : 'enable'}</button>
+  </div>`;
   // VLM inference perf (the frontier headline — proves the GPU is working hard)
   const v = d.vlm || {};
   if (v.tok_s) {
@@ -3450,6 +3456,13 @@ function renderNano(d) {
 async function pollNano() {
   try { renderNano(await (await fetch('/nano')).json()); } catch (e) { }
 }
+window.nanoToggleHeal = async function (on) {
+  try {
+    const j = await (await fetch('/nano/autorefresh', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: on }) })).json();
+    toast(j.enabled ? 'Self-heal ON — auto-refresh VLM under memory pressure' : 'Self-heal OFF', j.enabled ? 'ok' : 'warn');
+  } catch (e) { toast('Toggle failed', 'warn'); }
+  pollNano();
+};
 function openNano() { nanoModal.classList.add('open'); pollNano(); _nanoTimer = setInterval(pollNano, 1000); }
 function closeNano() { nanoModal.classList.remove('open'); if (_nanoTimer) { clearInterval(_nanoTimer); _nanoTimer = null; } }
 $('#nanobtn') && ($('#nanobtn').onclick = () => nanoModal.classList.contains('open') ? closeNano() : openNano());

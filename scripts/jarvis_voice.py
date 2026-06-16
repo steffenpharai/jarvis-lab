@@ -1842,6 +1842,79 @@ def read_meminfo() -> dict:
     return m
 
 
+# ---- Self-healing VLM memory watchdog ---------------------------------------
+# The 8GB ceiling is the real limiter: when MemAvailable collapses, llama.cpp
+# stalls on the mmproj vision prefill (needs ~800MB CONTIGUOUS; CMA fragments)
+# and returns 0 tokens. Auto-refresh jarvis-vlm to reclaim memory — but ONLY
+# when the box is idle, never mid-inference, and rate-limited, so it can't
+# interrupt the user. This is what keeps the edge box self-sustaining.
+VLM_AUTOREFRESH = {
+    "enabled": True,
+    "min_avail_mb": 160,    # refresh when MemAvailable stays below this
+    "consecutive": 3,       # require N consecutive low readings (~60s)
+    "idle_s": 30,           # only when no user activity for this long
+    "cooldown_s": 1800,     # at most once / 30 min
+    "last_refresh_ts": 0.0,
+    "refreshes": 0,
+    "low_streak": 0,
+}
+
+
+def _mem_avail_mb() -> int:
+    try:
+        return int(re.findall(r"\d+", read_meminfo().get("MemAvailable", "0"))[0]) // 1024
+    except Exception:  # noqa: BLE001
+        return 9999
+
+
+def _vlm_memory_watchdog() -> None:
+    cfg = VLM_AUTOREFRESH
+    while True:
+        time.sleep(20)
+        try:
+            if not cfg["enabled"]:
+                cfg["low_streak"] = 0
+                continue
+            avail = _mem_avail_mb()
+            if avail >= cfg["min_avail_mb"]:
+                cfg["low_streak"] = 0
+                continue
+            cfg["low_streak"] += 1
+            now = time.time()
+            if (cfg["low_streak"] < cfg["consecutive"]
+                    or now - LAST_USER_ACTIVITY["ts"] < cfg["idle_s"]
+                    or now - cfg["last_refresh_ts"] < cfg["cooldown_s"]):
+                continue
+            # Hold the inference lock so no turn can hit the VLM mid-restart.
+            if not jarvis_tools.VLM_BUSY.acquire(blocking=False):
+                continue
+            try:
+                print(f"[watchdog] MemAvailable={avail}MB low for "
+                      f"{cfg['low_streak']} checks — refreshing jarvis-vlm",
+                      flush=True)
+                subprocess.run(
+                    ["sudo", "-n", "systemctl", "restart", "jarvis-vlm"],
+                    check=False, capture_output=True, timeout=30)
+                cfg["last_refresh_ts"] = time.time()
+                cfg["refreshes"] += 1
+                cfg["low_streak"] = 0
+                deadline = time.time() + 60   # wait for llama-server to come back
+                while time.time() < deadline:
+                    time.sleep(3)
+                    try:
+                        if httpx.get(VLM_HEALTH, timeout=httpx.Timeout(
+                                connect=2, read=2, write=2, pool=2)).status_code == 200:
+                            break
+                    except Exception:  # noqa: BLE001
+                        pass
+                print(f"[watchdog] jarvis-vlm refreshed; MemAvailable now "
+                      f"{_mem_avail_mb()}MB", flush=True)
+            finally:
+                jarvis_tools.VLM_BUSY.release()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def read_soc_temp_c() -> float:
     temps = []
     for f in Path("/sys/class/thermal").glob("thermal_zone*/temp"):
@@ -2090,6 +2163,8 @@ def gather_metrics() -> dict:
         "throttle_headroom_c": _ns.get("throttle_headroom_c"),
         "vlm_tok_s": _VLM_PERF.get("tok_s"),
         "vlm_ttft_ms": _VLM_PERF.get("ttft_ms"),
+        "vlm_autorefresh": VLM_AUTOREFRESH["enabled"],
+        "vlm_refreshes": VLM_AUTOREFRESH["refreshes"],
     }
 
 
@@ -2511,6 +2586,12 @@ class H(BaseHTTPRequestHandler):
         elif p == "/nano":
             _snap = TEGRA.snapshot()
             _snap["vlm"] = dict(_VLM_PERF)
+            _snap["autorefresh"] = {
+                "enabled": VLM_AUTOREFRESH["enabled"],
+                "refreshes": VLM_AUTOREFRESH["refreshes"],
+                "min_avail_mb": VLM_AUTOREFRESH["min_avail_mb"],
+                "last_refresh_ts": VLM_AUTOREFRESH["last_refresh_ts"],
+            }
             self._send_json(200, _snap)
         elif p == "/history":
             self._send_json(200, {"messages": history_messages()})
@@ -2832,6 +2913,22 @@ class H(BaseHTTPRequestHandler):
                 self._send_json(200, export_dataset(opts))
             except Exception as e:  # noqa: BLE001
                 self._send_json(500, {"ok": False, "error": str(e)})
+        elif p == "/nano/autorefresh":
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                payload = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "bad json"}); return
+            if "enabled" in payload:
+                VLM_AUTOREFRESH["enabled"] = bool(payload["enabled"])
+            if "min_avail_mb" in payload:
+                VLM_AUTOREFRESH["min_avail_mb"] = max(
+                    64, min(1024, int(payload["min_avail_mb"])))
+            self._send_json(200, {"ok": True,
+                                  "enabled": VLM_AUTOREFRESH["enabled"],
+                                  "min_avail_mb": VLM_AUTOREFRESH["min_avail_mb"],
+                                  "refreshes": VLM_AUTOREFRESH["refreshes"]})
         elif p == "/nano/jetson_clocks":
             length = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(length) if length else b"{}"
@@ -2946,6 +3043,7 @@ def main():
     AUDIO.start()
     AUDIO_MONITOR.start()
     threading.Thread(target=_vlm_health_poller, daemon=True).start()
+    threading.Thread(target=_vlm_memory_watchdog, daemon=True).start()
     TEGRA.start()
     VMEM.start()
 
