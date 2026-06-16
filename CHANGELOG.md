@@ -3,6 +3,14 @@
 Pushed the on-device frontier further and hardened the 8 GB engineering.
 Highlights (newest first):
 
+- **Wake word now persists + auto-starts (it was silently dying on restart).** The
+  "Hey Jarvis" listener is an in-process thread and the enabled flag wasn't saved, so
+  every service restart left it off — "Hey Jarvis" got no response. Now a small
+  `prefs.json` persists the toggle (plus agent-mode / scene-cache / preset / record
+  seconds) and `main()` restores the listener on boot if it was on. Also resume the
+  browser AudioContext on the wake event so the greeting isn't swallowed by autoplay
+  policy. Verified: enable → survives a restart (`wake_enabled` back to true with no
+  manual step).
 - **Wake-from-eco now greets instead of judging the room.** Saying "Hey Jarvis"
   while asleep used to cold-start the VLM and immediately describe the camera scene
   (a near-silent recording → Whisper hallucinates filler text → VLM narrates the

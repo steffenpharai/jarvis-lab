@@ -3379,7 +3379,8 @@ function attachLiveStream() {
       // Open the matching event stream and render it in the conversation
       // pane exactly as if the user had clicked the orb themselves.
       if (m.turn_id && !isStreaming) {
-        ensureAudioCtx(); resetAudioQueue();
+        const _ac = ensureAudioCtx(); try { if (_ac && _ac.state === 'suspended') _ac.resume(); } catch {}
+        resetAudioQueue();
         makeUserMsg('(wake · listening…)', 'talk');
         const jmsg = makeJarvisMsg('talk');
         switchPane('conv');

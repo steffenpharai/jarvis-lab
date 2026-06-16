@@ -188,6 +188,35 @@ SETTINGS = {
 }
 SETTINGS_LOCK = threading.Lock()
 
+# Persist a few user toggles across restarts (the wake word listener is an
+# in-process thread, so a plain restart otherwise silently turns "Hey Jarvis" off).
+PREFS_FILE = LAB / "logs" / "prefs.json"
+_PERSIST_KEYS = ("wake_word_enabled", "agent_mode_enabled", "scene_cache_enabled",
+                 "preset", "record_seconds")
+
+
+def save_prefs() -> None:
+    try:
+        with SETTINGS_LOCK:
+            data = {k: SETTINGS.get(k) for k in _PERSIST_KEYS}
+        PREFS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        PREFS_FILE.write_text(json.dumps(data))
+    except Exception as e:  # noqa: BLE001
+        print(f"[prefs] save error: {e}", flush=True)
+
+
+def load_prefs() -> None:
+    try:
+        if not PREFS_FILE.exists():
+            return
+        data = json.loads(PREFS_FILE.read_text())
+        with SETTINGS_LOCK:
+            for k in _PERSIST_KEYS:
+                if k in data:
+                    SETTINGS[k] = data[k]
+    except Exception as e:  # noqa: BLE001
+        print(f"[prefs] load error: {e}", flush=True)
+
 
 # ----- SQLite persistence -----------------------------------------------------
 class Memory:
@@ -1924,11 +1953,13 @@ def set_wake_enabled(enabled: bool) -> bool:
         ok = WAKE.start(_wake_callback)
         with SETTINGS_LOCK:
             SETTINGS["wake_word_enabled"] = bool(ok)
+        save_prefs()
         return ok
     if not enabled and WAKE.enabled:
         WAKE.stop()
         with SETTINGS_LOCK:
             SETTINGS["wake_word_enabled"] = False
+        save_prefs()
         return True
     return True
 
@@ -3365,6 +3396,7 @@ class JarvisServer(ThreadingHTTPServer):
 
 
 def main():
+    load_prefs()   # restore persisted toggles (wake word, agent mode, …) before boot
     CAMERA.start()
     AUDIO.start()
     AUDIO_MONITOR.start()
@@ -3413,6 +3445,17 @@ def main():
         POWER["state"] = "eco"
         VMEM.set_enabled(False)
         print("jarvis: booted in ECO (VLM stopped) — wake on request", flush=True)
+
+    # Restore the wake word listener if the user had "Hey Jarvis" on — otherwise a
+    # plain service restart silently leaves it off (it's an in-process thread).
+    with SETTINGS_LOCK:
+        _want_wake = bool(SETTINGS.get("wake_word_enabled"))
+    if _want_wake:
+        try:
+            WAKE.start(_wake_callback)
+            print("jarvis: wake word 'Hey Jarvis' restored (listening)", flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"jarvis: wake word auto-start failed: {e}", flush=True)
 
     print(f"jarvis listening on http://{LISTEN_HOST}:{LISTEN_PORT}/", flush=True)
     JarvisServer((LISTEN_HOST, LISTEN_PORT), H).serve_forever()
