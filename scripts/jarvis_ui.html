@@ -1093,6 +1093,17 @@ textarea#text::placeholder { color: var(--dim); }
   box-shadow: 0 24px 70px -24px rgba(0,0,0,0.75);
 }
 
+/* detection-frequency chart (top detected classes, ambient VLM stream) */
+#det-chart { margin-bottom: 12px; }
+.det-h { font: 600 9px/1 'Geist Mono', monospace; letter-spacing: .16em; text-transform: uppercase; color: var(--accent); margin: 2px 0 8px; }
+.det-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; cursor: pointer; }
+.det-row:hover .det-lbl { color: var(--text); }
+.det-lbl { width: 84px; flex-shrink: 0; font: 500 11px/1.3 'Geist Mono', monospace; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: capitalize; }
+.det-bar { flex: 1; height: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 5px; overflow: hidden; }
+.det-bar > span { display: block; height: 100%; background: linear-gradient(90deg, var(--accent-soft), var(--accent)); border-radius: 5px; transition: width .5s var(--ease-out, ease); }
+.det-n { width: 34px; text-align: right; font: 600 11px/1 'Geist Mono', monospace; color: var(--text); font-variant-numeric: tabular-nums; }
+
 @media (max-width: 640px) {
   .intel { right: 6px; left: 6px; width: auto; bottom: 150px; }
   .composer.dock { width: 96vw; }
@@ -1364,6 +1375,7 @@ textarea#text::placeholder { color: var(--dim); }
     </div>
     <div class='pane hidden' id=pane-entities>
       <div class=empty id=entities-empty>No entities yet — Jarvis registers what it sees as the scene changes.</div>
+      <div id=det-chart></div>
       <div id=entities-list></div>
       <div id=entity-detail class=hidden></div>
     </div>
@@ -1709,6 +1721,17 @@ async function loadEntities() {
     const ents = j.entities || [];
     const ec = $('#ent-count'); if (ec) ec.textContent = ents.length;
     const emp = $('#entities-empty'); if (emp) emp.style.display = ents.length ? 'none' : '';
+    // detection-frequency chart: top classes by sighting count
+    const dc = $('#det-chart');
+    if (dc) {
+      const top = [...ents].sort((a, b) => b.count - a.count).slice(0, 8);
+      const maxC = Math.max(1, ...top.map(e => e.count));
+      dc.innerHTML = top.length ? ('<div class=det-h>Detection frequency · top ' + top.length + '</div>' +
+        top.map(e => '<div class=det-row data-label="' + escapeHtml(e.label) + '">' +
+          '<span class=det-lbl>' + escapeHtml(e.label) + '</span>' +
+          '<span class=det-bar><span style="width:' + Math.round(e.count / maxC * 100) + '%"></span></span>' +
+          '<span class=det-n>' + e.count + '</span></div>').join('')) : '';
+    }
     $('#entities-list').innerHTML = ents.map(e =>
       '<div class=ent-row data-label="' + escapeHtml(e.label) + '">' +
         '<img class=ent-thumb src="' + (e.frame_url || '/snapshot.jpg') + '" loading=lazy alt="">' +
@@ -1722,6 +1745,9 @@ async function loadEntities() {
 $('#entities-list') && $('#entities-list').addEventListener('click', (ev) => {
   const row = ev.target.closest('.ent-row'); if (!row) return;
   if (row.dataset.label) showEntityDetail(row.dataset.label);
+});
+$('#det-chart') && $('#det-chart').addEventListener('click', (ev) => {
+  const row = ev.target.closest('.det-row'); if (row && row.dataset.label) showEntityDetail(row.dataset.label);
 });
 function entityListView() {
   $('#entity-detail').classList.add('hidden');
