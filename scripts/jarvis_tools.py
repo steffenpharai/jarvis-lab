@@ -2145,6 +2145,361 @@ def forecast(location: str, days: int = 3) -> dict:
     return {"location": location, "days": out}
 
 
+# ============================================================================
+# JARVIS CAPABILITIES — information, utility, briefing, diagnostics
+# (all free / no API keys; location comes from get_device_location())
+# ============================================================================
+_LANG_CODES = {
+    "english": "en", "spanish": "es", "french": "fr", "german": "de",
+    "italian": "it", "portuguese": "pt", "dutch": "nl", "russian": "ru",
+    "chinese": "zh", "mandarin": "zh", "japanese": "ja", "korean": "ko",
+    "arabic": "ar", "hindi": "hi", "polish": "pl", "swedish": "sv",
+    "norwegian": "no", "danish": "da", "finnish": "fi", "greek": "el",
+    "turkish": "tr", "hebrew": "he", "thai": "th", "vietnamese": "vi",
+    "ukrainian": "uk", "czech": "cs", "romanian": "ro", "hungarian": "hu",
+}
+_CRYPTO_IDS = {
+    "btc": "bitcoin", "bitcoin": "bitcoin", "eth": "ethereum", "ethereum": "ethereum",
+    "sol": "solana", "solana": "solana", "doge": "dogecoin", "dogecoin": "dogecoin",
+    "ada": "cardano", "cardano": "cardano", "xrp": "ripple", "ripple": "ripple",
+    "ltc": "litecoin", "litecoin": "litecoin", "bnb": "binancecoin",
+    "matic": "matic-network", "dot": "polkadot", "polkadot": "polkadot",
+    "avax": "avalanche-2", "link": "chainlink", "chainlink": "chainlink",
+}
+_OSM_AMENITY = {
+    "coffee": "cafe", "cafe": "cafe", "coffee shop": "cafe",
+    "gas": "fuel", "gas station": "fuel", "petrol": "fuel", "fuel": "fuel",
+    "pharmacy": "pharmacy", "drugstore": "pharmacy",
+    "restaurant": "restaurant", "food": "restaurant", "bar": "bar", "pub": "pub",
+    "bank": "bank", "atm": "atm", "hospital": "hospital", "clinic": "clinic",
+    "supermarket": "supermarket", "grocery": "supermarket", "school": "school",
+    "parking": "parking", "hotel": "hotel", "library": "library",
+    "fast food": "fast_food", "fast_food": "fast_food",
+}
+
+
+@tool(
+    "sun_times",
+    description="Sunrise, sunset, and daylight hours for a place (default: here).",
+    category="web",
+    schema={"type": "object", "properties": {"location": {"type": "string"}}},
+)
+def sun_times(location: str = "") -> dict:
+    lat = lon = None
+    place = ""
+    if location.strip():
+        g = HTTP.get("https://geocoding-api.open-meteo.com/v1/search",
+                     params={"name": location, "count": 1})
+        res = (g.json().get("results") or [])
+        if res:
+            lat, lon, place = res[0]["latitude"], res[0]["longitude"], res[0]["name"]
+    else:
+        d = get_device_location()
+        lat, lon, place = d.get("lat"), d.get("lon"), device_location_str()
+    if lat is None:
+        return {"error": "location unavailable"}
+    r = HTTP.get("https://api.open-meteo.com/v1/forecast",
+                 params={"latitude": lat, "longitude": lon,
+                         "daily": "sunrise,sunset,daylight_duration",
+                         "timezone": "auto", "forecast_days": 1})
+    dd = r.json().get("daily", {})
+    sr = (dd.get("sunrise") or [None])[0]
+    ss = (dd.get("sunset") or [None])[0]
+    dl = (dd.get("daylight_duration") or [None])[0]
+    return {"location": place, "sunrise": sr, "sunset": ss,
+            "daylight_hours": round(dl / 3600, 1) if dl else None}
+
+
+@tool(
+    "news",
+    description="Top news headlines. Optional topic (e.g. 'technology', 'world').",
+    category="web",
+    schema={"type": "object", "properties": {
+        "topic": {"type": "string"}, "n": {"type": "integer"}}},
+)
+def news(topic: str = "", n: int = 5) -> dict:
+    import xml.etree.ElementTree as ET
+    n = max(1, min(10, int(n)))
+    if topic.strip():
+        url = ("https://news.google.com/rss/search?q="
+               + urllib.parse.quote(topic) + "&hl=en-US&gl=US&ceid=US:en")
+    else:
+        url = "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en"
+    r = HTTP.get(url, headers={"User-Agent": "Mozilla/5.0"})
+    root = ET.fromstring(r.text)
+    items = []
+    for item in root.iter("item"):
+        title = (item.findtext("title") or "").strip()
+        if title:
+            items.append(title)
+        if len(items) >= n:
+            break
+    return {"topic": topic or "top stories", "headlines": items}
+
+
+@tool(
+    "define",
+    description="Dictionary definition of an English word.",
+    category="web",
+    schema={"type": "object", "properties": {"word": {"type": "string"}},
+            "required": ["word"]},
+)
+def define(word: str) -> dict:
+    r = HTTP.get("https://api.dictionaryapi.dev/api/v2/entries/en/"
+                 + urllib.parse.quote(word.strip()))
+    if r.status_code != 200:
+        return {"word": word, "error": "no definition found"}
+    j = r.json()[0]
+    meanings = []
+    for m in j.get("meanings", [])[:3]:
+        defs = [d.get("definition") for d in m.get("definitions", [])[:2]]
+        meanings.append({"part_of_speech": m.get("partOfSpeech"), "definitions": defs})
+    return {"word": j.get("word"), "phonetic": j.get("phonetic"), "meanings": meanings}
+
+
+@tool(
+    "translate",
+    description="Translate text into a target language (e.g. to='Spanish' or 'fr').",
+    category="web",
+    schema={"type": "object", "properties": {
+        "text": {"type": "string"}, "to": {"type": "string"}},
+        "required": ["text", "to"]},
+)
+def translate(text: str, to: str) -> dict:
+    tl = _LANG_CODES.get(to.strip().lower(), to.strip().lower()[:2])
+    r = HTTP.get("https://translate.googleapis.com/translate_a/single",
+                 params={"client": "gtx", "sl": "auto", "tl": tl, "dt": "t", "q": text})
+    j = r.json()
+    translated = "".join(seg[0] for seg in j[0] if seg and seg[0])
+    src = j[2] if len(j) > 2 else "auto"
+    return {"original": text, "translated": translated, "to": to,
+            "detected_source": src}
+
+
+@tool(
+    "stock_price",
+    description="Current stock/ETF price by ticker (e.g. AAPL, TSLA, SPY).",
+    category="web",
+    schema={"type": "object", "properties": {"symbol": {"type": "string"}},
+            "required": ["symbol"]},
+)
+def stock_price(symbol: str) -> dict:
+    sym = symbol.strip().upper()
+    r = HTTP.get("https://query1.finance.yahoo.com/v8/finance/chart/"
+                 + urllib.parse.quote(sym), headers={"User-Agent": "Mozilla/5.0"})
+    res = (r.json().get("chart", {}).get("result") or [{}])[0]
+    meta = res.get("meta", {}) if res else {}
+    price = meta.get("regularMarketPrice")
+    prev = meta.get("chartPreviousClose") or meta.get("previousClose")
+    chg = (price - prev) if (price is not None and prev) else None
+    return {"symbol": sym, "price": price, "currency": meta.get("currency"),
+            "change": round(chg, 2) if chg is not None else None,
+            "change_pct": round(100 * chg / prev, 2) if chg is not None and prev else None}
+
+
+@tool(
+    "crypto_price",
+    description="Current cryptocurrency price in USD (e.g. bitcoin, ethereum, BTC).",
+    category="web",
+    schema={"type": "object", "properties": {"coin": {"type": "string"}},
+            "required": ["coin"]},
+)
+def crypto_price(coin: str) -> dict:
+    c = coin.strip().lower()
+    cid = _CRYPTO_IDS.get(c, c)
+    r = HTTP.get("https://api.coingecko.com/api/v3/simple/price",
+                 params={"ids": cid, "vs_currencies": "usd",
+                         "include_24hr_change": "true"})
+    j = r.json()
+    if cid not in j:
+        s = HTTP.get("https://api.coingecko.com/api/v3/search", params={"query": c})
+        coins = s.json().get("coins", [])
+        if coins:
+            cid = coins[0]["id"]
+            r = HTTP.get("https://api.coingecko.com/api/v3/simple/price",
+                         params={"ids": cid, "vs_currencies": "usd",
+                                 "include_24hr_change": "true"})
+            j = r.json()
+    d = j.get(cid, {})
+    return {"coin": cid, "usd": d.get("usd"),
+            "change_24h_pct": round(d.get("usd_24h_change", 0), 2) if d else None}
+
+
+@tool(
+    "nearby_places",
+    description="Find places near you by category (cafe, pharmacy, gas, restaurant…).",
+    category="web",
+    schema={"type": "object", "properties": {
+        "category": {"type": "string"}, "radius_m": {"type": "integer"}},
+        "required": ["category"]},
+)
+def nearby_places(category: str, radius_m: int = 1500) -> dict:
+    loc = get_device_location()
+    lat, lon = loc.get("lat"), loc.get("lon")
+    if lat is None:
+        return {"error": "location unavailable"}
+    radius_m = max(200, min(5000, int(radius_m)))
+    amenity = _OSM_AMENITY.get(category.strip().lower(), category.strip().lower())
+    q = (f"[out:json][timeout:20];"
+         f"(node(around:{radius_m},{lat},{lon})[amenity={amenity}];);out 8;")
+    body = ("data=" + urllib.parse.quote(q)).encode()
+    hdrs = {"Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": "jarvis-lab/1.0"}
+    els = None
+    for url in ("https://overpass-api.de/api/interpreter",
+                "https://overpass.kumi.systems/api/interpreter"):
+        try:
+            r = HTTP.post(url, content=body, headers=hdrs, timeout=25)
+            els = r.json().get("elements", [])
+            break
+        except Exception:  # noqa: BLE001
+            continue
+    if els is None:
+        return {"error": "places lookup unavailable (Overpass)"}
+    places = []
+    for e in els:
+        t = e.get("tags", {})
+        if t.get("name"):
+            addr = " ".join(filter(None, [t.get("addr:housenumber"),
+                                          t.get("addr:street")]))
+            places.append({"name": t.get("name"), "type": t.get("amenity"),
+                           "address": addr or None})
+    return {"category": category, "near": device_location_str(),
+            "places": places[:8]}
+
+
+@tool(
+    "network_speed",
+    description="Quick internet speed test (download Mbps + latency) from the device.",
+    category="self",
+    schema={"type": "object", "properties": {}},
+)
+def network_speed() -> dict:
+    t0 = time.monotonic()
+    HTTP.get("https://speed.cloudflare.com/__down", params={"bytes": 1}, timeout=10)
+    ping_ms = round((time.monotonic() - t0) * 1000, 1)
+    nbytes = 8_000_000
+    t0 = time.monotonic()
+    r = HTTP.get("https://speed.cloudflare.com/__down",
+                 params={"bytes": nbytes}, timeout=30)
+    got = len(r.content)
+    dt = time.monotonic() - t0
+    mbps = round((got * 8) / dt / 1e6, 1) if dt > 0 else None
+    return {"download_mbps": mbps, "latency_ms": ping_ms,
+            "mb_downloaded": round(got / 1e6, 1), "seconds": round(dt, 2)}
+
+
+@tool(
+    "research",
+    description="Deep-dive a topic — compiles an encyclopedia summary plus live web "
+                "results into one briefing. Use for 'pull up everything on X'.",
+    category="web",
+    schema={"type": "object", "properties": {"topic": {"type": "string"}},
+            "required": ["topic"]},
+)
+def research(topic: str) -> dict:
+    out = {"topic": topic}
+    try:
+        out["summary"] = TOOLS.call("wikipedia", {"query": topic}).get("result")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        out["web"] = TOOLS.call("web_search", {"query": topic, "n": 5}).get("result")
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+@tool(
+    "briefing",
+    description="A spoken daily briefing: date/time, local weather, top headlines, "
+                "and today's reminders. Use for 'good morning' / 'brief me'.",
+    category="web",
+    schema={"type": "object", "properties": {}},
+    needs_ctx=True,
+)
+def briefing(ctx) -> dict:
+    out = {}
+    try:
+        out["now"] = TOOLS.call("now", {}).get("result")
+    except Exception:  # noqa: BLE001
+        pass
+    out["location"] = device_location_str()
+    try:
+        out["weather"] = TOOLS.call("weather", {}).get("result")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        out["headlines"] = (TOOLS.call("news", {"n": 3}).get("result") or {}).get("headlines")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        out["reminders"] = TOOLS.call("reminder_list", {}).get("result")
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+@tool(
+    "status_report",
+    description="A systems status report — power, temperatures, memory, disk. "
+                "JARVIS-style diagnostics ('how are you doing', 'status report').",
+    category="self",
+    schema={"type": "object", "properties": {}},
+)
+def status_report() -> dict:
+    return TOOLS.call("system_status", {}).get("result") or {"error": "unavailable"}
+
+
+@tool(
+    "timer",
+    description="Set a countdown timer; it chimes and announces when done. "
+                "Give minutes and/or seconds.",
+    category="productivity",
+    schema={"type": "object", "properties": {
+        "minutes": {"type": "number"}, "seconds": {"type": "number"},
+        "label": {"type": "string"}}},
+    needs_ctx=True,
+)
+def timer(ctx, minutes: float = 0, seconds: float = 0, label: str = "") -> dict:
+    total = int((minutes or 0) * 60 + (seconds or 0))
+    if total <= 0:
+        return {"error": "specify minutes and/or seconds"}
+    mins, secs = total // 60, total % 60
+    dur = " ".join(p for p in (
+        f"{mins} minute{'s' if mins != 1 else ''}" if mins else "",
+        f"{secs} second{'s' if secs != 1 else ''}" if secs else "") if p)
+    spoken = (label.strip() or f"Your {dur} timer") + " is up"   # said when it FIRES
+    fire_at = _now() + total
+    with _mem(ctx).lock:
+        cur = _mem(ctx)._con.execute(
+            "INSERT INTO reminders (text, fire_at, created_at) VALUES (?,?,?)",
+            (spoken, fire_at, _now()),
+        )
+        rid = cur.lastrowid
+    # result the agent confirms with — make clear the timer is SET (not done)
+    return {"timer_set_for": dur or f"{total} seconds", "in_seconds": total,
+            "fires_at": time.strftime("%H:%M:%S", time.localtime(fire_at)), "id": rid}
+
+
+@tool(
+    "ocr_translate",
+    description="Read text in the camera view and translate it (e.g. to='English'). "
+                "For foreign signs, menus, labels.",
+    category="vision",
+    schema={"type": "object", "properties": {"to": {"type": "string"}},
+            "required": ["to"]},
+    needs_ctx=True,
+)
+def ocr_translate(ctx, to: str = "English") -> dict:
+    r = TOOLS.call("read_all_text", {}).get("result") or {}
+    text = (r.get("text") or "").strip()
+    if not text or text.upper() == "NO_TEXT":
+        return {"error": "no readable text in view"}
+    tr = TOOLS.call("translate", {"text": text, "to": to}).get("result") or {}
+    return {"original": text, "translated": tr.get("translated"), "to": to}
+
+
 @tool(
     "geocode",
     description="Forward geocode an address via Nominatim.",
@@ -3416,41 +3771,39 @@ def watch_remove(ctx, id: int) -> dict:
 
 # Tools the VLM is allowed to call autonomously. Excludes destructive ones
 # (restart_self, forget, scan_room) and any that need explicit human intent.
+# Curated for a voice-first, location-aware desk Jarvis (trimmed from 89 → leaner
+# prompt = faster, more stable, better tool selection). Cut tools still EXIST and
+# are callable via the UI/API — they're just not offered to the agent. Re-add a
+# name here to bring it back.
 DEFAULT_AGENT_ALLOW: set[str] = {
-    # reasoning
-    "do_math", "convert", "now", "time_in", "coin_flip", "roll",
-    "random_choice", "regex_test", "json_query", "decode", "password",
-    "uuid", "cron_next",
-    # web (no api keys)
-    "where_am_i", "weather", "forecast", "wikipedia", "duckduckgo", "web_search",
-    "hn_top", "hn_search", "geocode", "reverse_geocode",
-    "github_repo", "currency_rate", "dns", "is_online", "arxiv",
-    "rss_fetch", "summarize_page", "pdf_to_text", "whois",
-    # vision
-    "investigate", "detect_objects", "zoom_into", "read_all_text",
-    "multi_frame_compare", "track_object", "depth_of", "timelapse",
-    "research_visual", "read_barcode", "barcode_lookup",
-    # cloud escalation (Sprint B) — opt-in; only fires if keys are configured
-    "ask_claude", "ask_gpt", "ask_gemini", "escalate",
+    # reasoning / utility
+    "do_math", "convert", "now", "coin_flip", "roll",
+    # web / knowledge (location-aware)
+    "where_am_i", "weather", "forecast", "time_in", "currency_rate",
+    "web_search", "wikipedia", "research",
+    "sun_times", "news", "define", "translate", "stock_price", "crypto_price",
+    "nearby_places", "briefing",
+    # vision (the eyes)
+    "investigate", "read_all_text", "ocr_translate", "detect_objects",
+    "zoom_into", "research_visual", "multi_frame_compare",
+    "read_barcode", "barcode_lookup",
     # memory
-    "recall", "recent", "pinned", "whats_new", "list_entities",
-    "summarize_today", "recall_visual", "visual_timeline", "remember_now",
+    "recall", "recent", "recall_visual", "visual_timeline", "remember_now",
+    "summarize_today", "pin_this", "pinned", "unpin",
+    "profile_get", "profile_set",
     # productivity
-    "note_create", "note_append", "note_search", "note_list",
-    "todo_add", "todo_done", "todo_list", "todo_due_today",
-    "reminder_set", "reminder_list",
-    "bookmark", "bookmarks", "journal_entry",
-    # audio
-    "play_sound", "transcribe_file", "record_ambient",
-    # self
-    "system_status", "get_logs", "enable_live_mode",
-    "disable_live_mode", "set_persona", "wake_word_off",
-    "health_check", "watch_add", "watch_list", "watch_remove",
-    # identity (Sprint D)
-    "profile_get",
-    # smart home (Tier 3)
+    "reminder_set", "reminder_list", "timer",
+    # smart home
     "hue_lights", "lights_state", "lights_on", "lights_off",
     "lights_set", "scene_activate", "lights_pulse",
+    # self / diagnostics
+    "system_status", "status_report", "network_speed", "health_check",
+    "enable_live_mode", "disable_live_mode", "set_persona", "wake_word_off",
+    "watch_add", "watch_list", "watch_remove", "restart_self",
+    # audio
+    "play_sound",
+    # cloud escalation — opt-in only (skipped at registration unless keys set)
+    "ask_claude", "ask_gpt", "ask_gemini", "escalate",
 }
 
 

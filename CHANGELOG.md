@@ -3,7 +3,20 @@
 Pushed the on-device frontier further and hardened the 8 GB engineering.
 Highlights (newest first):
 
-- **Agent keeps its eyes, but encodes the frame once per turn (stops VLM crashes).**
+- **Toolset overhaul — 13 new JARVIS-style tools + a leaner agent.** Reviewed all
+  ~100 tools with the user and trimmed the agent's allowlist from 89 to a curated
+  ~60 (cut tools still exist + are callable via the UI/API — just not offered to the
+  agent, so the prompt is leaner and tool-selection sharper). **New capabilities,
+  all free / no API keys:** `where_am_i` + location-awareness (the Orin has no GPS —
+  derives city/lat-lon from the public IP, and `weather`/`forecast` now default to
+  *here*); `sun_times`, `news`, `define`, `translate`, `stock_price`, `crypto_price`,
+  `nearby_places` (OpenStreetMap), `network_speed`; the JARVIS headliners `briefing`
+  ("good morning" — date + local weather + headlines + reminders), `research`
+  ("pull up everything on X"), `timer` (countdown that chimes via the reminder loop),
+  `status_report` (spoken diagnostics), and `ocr_translate` (read foreign text through
+  the camera and translate it). Kept Hue smart-home + reminders; cut dev-toys, niche
+  web lookups, granular memory ops, and broken/heavy vision tools. Verified each new
+  tool live against real data.
   The agent loop fed the camera image into *every* VLM round — the ~800 MB mmproj
   encode is the 8 GB box's main SIGABRT trigger, so a multi-step turn ("what's the
   weather?") re-encoded the frame each round and crashed the VLM mid-turn (tool ran,
