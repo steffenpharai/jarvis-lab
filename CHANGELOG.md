@@ -3,6 +3,19 @@
 Pushed the on-device frontier further and hardened the 8 GB engineering.
 Highlights (newest first):
 
+- **Companion orb — frontier visual redesign (iridescent fluid energy core).**
+  Research-grounded pass (Apple Siri '26 iridescent metal, OpenAI's fluid morphing
+  sphere, Google Gemini's "energy/directionality" gradients): the orb is no longer
+  a flat single-color ball. The surface now flows organically (two-octave 3D
+  **simplex-noise** vertex displacement) and shimmers **warm→cool iridescent**
+  (IQ cosine palette) with a bright **metallic fresnel rim** that flares white —
+  while still keeping per-state color identity (idle rust, listening cyan, …). An
+  inner energy core fills the center (depth, not a hollow shell), and a soft dark
+  radial **"presence well"** sits behind it so the additive glow reads against the
+  camera feed (the old flat orb washed out — additive over a bright feed adds light
+  it can't contrast). Measured ~3–5× brighter (idle avg luma 17→87, peak now hits
+  white) and verifiably multi-hue. Still WebGLRenderer / no post-processing / zero
+  Jetson load.
 - **Companion orb — per-state motion + power choreography.** The three.js
   presence orb now reads as a presence reacting to *you*, not just a color swatch.
   Each voice state has a distinct motion signature: **thinking** spins up into a
