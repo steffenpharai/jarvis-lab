@@ -2441,6 +2441,23 @@ def briefing(ctx) -> dict:
 
 
 @tool(
+    "show_panel",
+    description="Open a panel in the Intel sidebar so the user can SEE it. "
+                "panel ∈ talk | seen (what the camera has seen) | memory | "
+                "tools | activity | entities | live | pinned | timeline | "
+                "cloud (3D point cloud) | graph (entity link chart). Call this "
+                "whenever the user asks to see / show / pull up / open something.",
+    category="self",
+    schema={"type": "object", "properties": {"panel": {"type": "string"}},
+            "required": ["panel"]},
+)
+def show_panel(panel: str) -> dict:
+    # The effect is client-side: the browser reads this off the agent step stream
+    # and opens the panel. The server just acknowledges the request.
+    return {"ok": True, "panel": (panel or "").strip().lower()}
+
+
+@tool(
     "status_report",
     description="A systems status report — power, temperatures, memory, disk. "
                 "JARVIS-style diagnostics ('how are you doing', 'status report').",
@@ -3796,7 +3813,8 @@ DEFAULT_AGENT_ALLOW: set[str] = {
     # smart home
     "hue_lights", "lights_state", "lights_on", "lights_off",
     "lights_set", "scene_activate", "lights_pulse",
-    # self / diagnostics
+    # self / diagnostics + UI control
+    "show_panel",
     "system_status", "status_report", "network_speed", "health_check",
     "enable_live_mode", "disable_live_mode", "set_persona", "wake_word_off",
     "watch_add", "watch_list", "watch_remove", "restart_self",
@@ -3823,6 +3841,10 @@ from training data alone, including:
 - Math that benefits from a calculator
 - Anything happening "right now", "today", "currently", or "the latest"
 - Controlling lights via Hue (lights_on, lights_off, lights_set, scene_activate)
+- Showing the user something on screen — whenever they ask to see / show /
+  pull up / open / bring up a panel (what you've SEEN, the timeline, your
+  memory, tools, entities, the link chart, the 3D point cloud), CALL show_panel
+  with the panel name. Open the panel first, THEN say a brief sentence.
 
 Tool-call format. When you need a tool, output EXACTLY this and STOP — no
 preamble, no explanation, just the tag:
@@ -3845,6 +3867,14 @@ You: <tool_call>{"name": "time_in", "args": {"tz": "Australia/Sydney"}}</tool_ca
 User: What's the weather in Tokyo?
 You: <tool_call>{"name": "weather", "args": {"location": "Tokyo"}}</tool_call>
 (then): Tokyo is 19°C and partly cloudy, with 77% humidity.
+
+User: Show me what you've seen recently.
+You: <tool_call>{"name": "show_panel", "args": {"panel": "seen"}}</tool_call>
+(then): Here you are, sir — that's what I've observed.
+
+User: Pull up the timeline.
+You: <tool_call>{"name": "show_panel", "args": {"panel": "timeline"}}</tool_call>
+(then): Timeline's up.
 
 User: What's 1.23 times 456 plus 78?
 You: <tool_call>{"name": "do_math", "args": {"expr": "1.23*456 + 78"}}</tool_call>

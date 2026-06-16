@@ -1070,8 +1070,10 @@ body.pwr-banner .wake-pill { display: none !important; }
 .talkbtn:hover { background: radial-gradient(circle, rgba(193,95,60,0.12), transparent 68%); }
 .talkbtn:active { transform: translate(-50%, -50%) scale(0.97); }
 
-/* ephemeral conversation captions over the stage */
-.say {
+/* ephemeral conversation captions over the stage — retired: Jarvis now answers in
+   the Intel rail (streamed + voice-synced), so the under-orb reply block is hidden */
+.say { display: none !important; }
+.say-legacy {
   position: fixed; left: 50%; transform: translateX(-50%);
   bottom: calc(var(--dock-h, 150px) + 44px);
   width: min(760px, 88vw); text-align: center; z-index: 9; pointer-events: none;
@@ -2631,7 +2633,7 @@ async function doTurn(payload) {
   if (payload.kind !== 'regenerate' && !payload.greet) makeUserMsg(userText, payload.kind);
 
   const jmsg = makeJarvisMsg(payload.kind);
-  switchPane('conv');
+  openIntel('conv');   // Jarvis answers in the Intel rail (streamed, synced to the voice)
 
   // POST /turn to start it server-side, then attach to its event stream.
   let r;
@@ -2718,10 +2720,11 @@ function attachTurn(turn_id, jmsg, kind) {
       reasonPush('plan', 'plan · ' + (m.max_steps || '?') + ' steps');
       ensureAgentSteps(jmsg);
     } else if (ph === 'agent_step') {
+      if (m.tool === 'show_panel') applyUiPanel((m.args && m.args.panel) || '');
       reasonPush(m.ok === false ? 'err' : 'act', (m.tool || 'tool') + (m.args ? ' ' + _summarizeArgs(m.args) : ''));
       appendAgentStep(jmsg, m);
     } else if (ph === 'token') {
-      raw += m.delta; scheduleRender(); sayReply(raw);
+      raw += m.delta; scheduleRender();
     } else if (ph === 'audio_segment') {
       enqueueSegment(m, bubble);
       if (convoOn) startBargeListen();   // armed as soon as there's audio to interrupt
@@ -3243,6 +3246,25 @@ function openIntel(pane) { if (intelEl) { intelEl.classList.add('open'); intelEl
 function closeIntel() { if (intelEl) { intelEl.classList.remove('open'); intelEl.setAttribute('aria-hidden', 'true'); } }
 $('#intelbtn').onclick = () => { intelEl.classList.contains('open') ? closeIntel() : openIntel(); };
 $('#intelclose').onclick = closeIntel;
+
+// AI-driven UI control: Jarvis opens/navigates the Intel rail itself when it calls
+// the show_panel tool (interpreted from the agent step stream).
+function applyUiPanel(panel) {
+  panel = (panel || '').toLowerCase().trim();
+  if (panel === 'timeline') { if (typeof openTimeline === 'function') openTimeline(); return; }
+  if (['cloud', 'point cloud', 'pointcloud', '3d'].includes(panel)) { window.openPointCloud && window.openPointCloud(); return; }
+  if (['graph', 'link chart', 'links', 'map', 'network'].includes(panel)) { if (typeof openGraph === 'function') openGraph(); return; }
+  const map = {
+    talk: 'conv', conversation: 'conv', conv: 'conv', chat: 'conv', answer: 'conv',
+    seen: 'seen', 'visual memory': 'seen', vision: 'seen',
+    memory: 'memory', mem: 'memory', remember: 'memory',
+    tools: 'tools', capabilities: 'tools', activity: 'activity', log: 'activity',
+    entities: 'entities', entity: 'entities', objects: 'entities',
+    live: 'live', pinned: 'pins', pins: 'pins', pin: 'pins',
+  };
+  openIntel(map[panel] || 'conv');
+}
+window.applyUiPanel = applyUiPanel;
 
 // keep the on-stage captions docked just above the command bar, whatever its height
 (function trackDockHeight() {
