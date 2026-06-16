@@ -3,6 +3,14 @@
 Pushed the on-device frontier further and hardened the 8 GB engineering.
 Highlights (newest first):
 
+- **Voice is now fully agentic (tools, not just vision).** Spoken turns used to do
+  a single VLM pass over the camera frame — so "what's the weather?" got a scene
+  description, never a real answer. Talk/conversation/wake turns (and the text
+  composer) now route through the existing ReAct `agentic_loop` with `use_frame=true`,
+  so they keep the camera *and* can call all 90+ local tools (weather, web_search,
+  time, …). Opt-in per turn via a payload `agent` flag; the global Agent toggle still
+  forces it everywhere. Verified live: "what is the weather in London?" → the agent
+  fired the `weather` tool and spoke back real conditions (15°C, partly cloudy, …).
 - **Barge-in — interrupt Jarvis by talking over him.** In conversation mode, while
   he's speaking (and through the post-reply TTS playback) the client watches the live
   mic level on a dedicated `/audio_meter` stream; sustained voice cuts the TTS,

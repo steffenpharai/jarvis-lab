@@ -1415,7 +1415,11 @@ def run_turn(ctx: TurnCtx, payload: dict) -> None:
         }))
 
         with SETTINGS_LOCK:
-            agent_on = bool(SETTINGS.get("agent_mode_enabled"))
+            # Voice turns opt into the agentic tool loop via payload {"agent": true}
+            # so spoken questions can use the 90+ tools (weather, web, time, …) and
+            # not just describe the camera frame. The global Agent toggle still
+            # forces it for every turn.
+            agent_on = bool(SETTINGS.get("agent_mode_enabled")) or bool(payload.get("agent"))
             agent_max_steps = int(SETTINGS.get("agent_max_steps", 3))
 
         agent_steps: list = []
@@ -1847,7 +1851,7 @@ def _wake_callback(score: float) -> None:
     ctx = register_turn(tid, "talk")
     threading.Thread(
         target=run_turn,
-        args=(ctx, {"kind": "talk", "seconds": 8, "convo": True, "wake_score": score}),
+        args=(ctx, {"kind": "talk", "seconds": 8, "convo": True, "agent": True, "wake_score": score}),
         daemon=True,
     ).start()
     # Broadcast wake event to all live subscribers so the UI lights up

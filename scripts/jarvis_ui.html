@@ -2810,7 +2810,7 @@ function setConvo(on, reason) {
 function convoListen() {
   if (!convoOn || isStreaming) return;
   clearTimeout(convoTimer); stopBargeListen();
-  doTurn({ kind: 'talk', convo: true, seconds: 12 });
+  doTurn({ kind: 'talk', convo: true, agent: true, seconds: 12 });
 }
 function convoAfterReply() {
   if (!convoOn) return;
@@ -3196,11 +3196,11 @@ function submit() {
   if (rq !== null) { text.value = ''; text.style.height = 'auto'; doRecall(rq); return; }
   const subj = investigateSubject(v);
   if (subj) { text.value = ''; text.style.height = 'auto'; doInvestigate({subject: subj}); return; }
-  doTurn({kind: 'text', text: v});
+  doTurn({kind: 'text', text: v, agent: true});
   text.value = ''; text.style.height = 'auto';
 }
 sendbtn.onclick = submit;
-orb.onclick = () => { if (!isStreaming) doTurn({kind: 'talk'}); };
+orb.onclick = () => { if (!isStreaming) doTurn({kind: 'talk', agent: true}); };
 $$('.chip').forEach(b => { b.onclick = () => { if (!isStreaming) runCmd(b.dataset.cmd); }; });
 
 /* ===== companion + intel rail (COP layout) ===== */
@@ -3220,7 +3220,7 @@ function sayReply(text) {
 }
 // the big central orb is the primary "talk to Jarvis" target
 const talkbtn = $('#talkbtn');
-if (talkbtn) talkbtn.onclick = () => { if (!isStreaming) doTurn({ kind: 'talk' }); };
+if (talkbtn) talkbtn.onclick = () => { if (!isStreaming) doTurn({ kind: 'talk', agent: true }); };
 
 // intel rail open/close
 const intelEl = $('#intel');
