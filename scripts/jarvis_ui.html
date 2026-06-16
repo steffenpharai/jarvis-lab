@@ -1103,6 +1103,19 @@ textarea#text::placeholder { color: var(--dim); }
 .det-bar { flex: 1; height: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 5px; overflow: hidden; }
 .det-bar > span { display: block; height: 100%; background: linear-gradient(90deg, var(--accent-soft), var(--accent)); border-radius: 5px; transition: width .5s var(--ease-out, ease); }
 .det-n { width: 34px; text-align: right; font: 600 11px/1 'Geist Mono', monospace; color: var(--text); font-variant-numeric: tabular-nums; }
+/* live detection ticker on the feed (ambient VLM object stream) */
+.dettick { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); z-index: 6;
+  display: none; align-items: center; gap: 7px; max-width: 78%; overflow: hidden;
+  padding: 6px 12px; border-radius: var(--r-pill); background: rgba(11,12,15,0.78);
+  -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--border-strong); pointer-events: none; }
+.dettick.on { display: inline-flex; }
+.dettick .dt-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 7px rgba(74,222,128,0.7); animation: pulse 1.6s ease-in-out infinite; flex-shrink: 0; }
+.dettick .dt-lbl { font: 600 9px/1 'Geist Mono', monospace; letter-spacing: .14em; color: var(--ok); text-transform: uppercase; flex-shrink: 0; }
+.dettick .dt-chip { font: 500 10.5px/1 'Geist Mono', monospace; color: var(--text); background: var(--accent-soft); border: 1px solid var(--border); border-radius: var(--r-pill); padding: 3px 8px; text-transform: capitalize; white-space: nowrap; flex-shrink: 0; }
+.dettick.flash { animation: dtflash .55s var(--ease-out, ease-out); }
+@keyframes dtflash { from { border-color: var(--ok); box-shadow: 0 0 18px rgba(74,222,128,0.45); } to { border-color: var(--border-strong); box-shadow: none; } }
+@media (prefers-reduced-motion: reduce) { .dettick.flash { animation: none; } .dettick .dt-dot { animation: none; } }
 
 @media (max-width: 640px) {
   .intel { right: 6px; left: 6px; width: auto; bottom: 150px; }
@@ -1274,6 +1287,7 @@ textarea#text::placeholder { color: var(--dim); }
       </div>
       <div class=scansweep aria-hidden=true></div>
       <svg class=tracks id=tracks viewBox='0 0 1000 1000' preserveAspectRatio=none></svg>
+      <div class=dettick id=dettick></div>
       <div class='hud-pill hud-tl livepill idle' id=livepill><span class=dot></span> idle</div>
       <div class='hud-pill hud-tr' id=hudtr><span>0.0 fps</span><span class=hud-sep>·</span><span class='hud-val'>—</span></div>
       <div class='hud-pill hud-bl' id=hudbl>qwen2.5-vl-3b · 640&times;480</div>
@@ -1749,6 +1763,31 @@ $('#entities-list') && $('#entities-list').addEventListener('click', (ev) => {
 $('#det-chart') && $('#det-chart').addEventListener('click', (ev) => {
   const row = ev.target.closest('.det-row'); if (row && row.dataset.label) showEntityDetail(row.dataset.label);
 });
+
+/* ===== live detection ticker on the feed (ambient VLM object stream) ===== */
+let _lastDetId = null;
+function parseObjs(s) {
+  if (!s) return [];
+  s = String(s).trim();
+  if (s[0] === '[') { try { const a = JSON.parse(s); if (Array.isArray(a)) return a.map(x => String(x).trim()).filter(Boolean); } catch (e) { } }
+  return s.split(/[;,\n]/).map(x => x.trim()).filter(Boolean);
+}
+async function tickDetections() {
+  const tick = $('#dettick'); if (!tick) return;
+  if (window._perceptionMode) { tick.classList.remove('on'); return; }  // OWL boxes take over
+  try {
+    const j = await (await fetch('/memory/visual/recent')).json();
+    // most recent keyframe that actually has detections (some are empty)
+    const latest = (j.items || []).find(it => parseObjs(it.objects).length);
+    const objs = latest ? parseObjs(latest.objects).slice(0, 6) : [];
+    if (!objs.length) { tick.classList.remove('on'); return; }
+    tick.innerHTML = '<span class=dt-dot></span><span class=dt-lbl>Detecting</span>' +
+      objs.map(o => '<span class=dt-chip>' + escapeHtml(o) + '</span>').join('');
+    tick.classList.add('on');
+    if (latest.id !== _lastDetId) { _lastDetId = latest.id; tick.classList.remove('flash'); void tick.offsetWidth; tick.classList.add('flash'); }
+  } catch (e) { }
+}
+setInterval(tickDetections, 3000); tickDetections();
 function entityListView() {
   $('#entity-detail').classList.add('hidden');
   $('#entities-list').classList.remove('hidden');
