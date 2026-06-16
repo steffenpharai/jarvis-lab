@@ -1,20 +1,21 @@
 [Unit]
 Description=Jarvis NanoOWL open-vocab detector sidecar (container)
-# Start AFTER the VLM so llama-server claims its contiguous GPU memory first;
-# OWL (~900MB) then loads on top. Reverse order risks a VLM CMA/OOM crash-loop.
-After=jarvis-vlm.service docker.service network-online.target
+# Perception mode: OWL and the VLM are MUTUALLY EXCLUSIVE on the 8GB Orin Nano —
+# they cannot co-reside (confirmed OOM / VLM crash-loop). Conflicts= enforces the
+# swap at the systemd level: starting OWL stops the VLM, and starting the VLM
+# stops OWL. (Previously this unit Wants=jarvis-vlm, which pulled the VLM right
+# back and OOM'd OWL — the cause of perception-mode detect failures.)
+After=docker.service network-online.target
 Requires=docker.service
-Wants=jarvis-vlm.service
+Conflicts=jarvis-vlm.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 Environment=HOME=/home/zip
-# Wait for the VLM to be healthy before grabbing any GPU.
-# Wait for the VLM to be healthy, then free reclaimable RAM (OWL co-resident on
-# 8GB is tight; the prior container was OOM-killed). Run via bash so a missing
-# exec bit (git checkout) can't break startup.
-ExecStartPre=/bin/sh -c 'for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1 && break; sleep 3; done; sync; echo 1 > /proc/sys/vm/drop_caches 2>/dev/null || true'
+# Free reclaimable + contiguous memory before the TRT engine grabs the GPU
+# (Tegra CMA preflight — runs as root; no VLM-health wait, the VLM is intentionally down).
+ExecStartPre=/bin/sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true; echo 1 > /proc/sys/vm/compact_memory 2>/dev/null || true'
 ExecStart=/bin/bash /home/zip/jarvis-lab/scripts/run_owl_sidecar.sh
 ExecStop=/usr/bin/docker stop owl-sidecar
 TimeoutStartSec=600

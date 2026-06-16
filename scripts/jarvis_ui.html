@@ -1113,6 +1113,17 @@ textarea#text::placeholder { color: var(--dim); }
 .dettick .dt-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 7px rgba(74,222,128,0.7); animation: pulse 1.6s ease-in-out infinite; flex-shrink: 0; }
 .dettick .dt-lbl { font: 600 9px/1 'Geist Mono', monospace; letter-spacing: .14em; color: var(--ok); text-transform: uppercase; flex-shrink: 0; }
 .dettick .dt-chip { font: 500 10.5px/1 'Geist Mono', monospace; color: var(--text); background: var(--accent-soft); border: 1px solid var(--border); border-radius: var(--r-pill); padding: 3px 8px; text-transform: capitalize; white-space: nowrap; flex-shrink: 0; }
+/* perception-mode banner (real-time OWL detection; VLM paused) */
+.percbanner { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); z-index: 18;
+  display: none; align-items: center; gap: 10px; padding: 7px 10px 7px 14px; border-radius: var(--r-pill);
+  background: rgba(11,12,15,0.9); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--cyan); box-shadow: 0 0 22px rgba(56,189,248,0.25);
+  font: 600 11px/1 'Geist Mono', monospace; letter-spacing: .08em; color: var(--cyan); }
+.percbanner.on { display: inline-flex; }
+.percbanner.warn { border-color: var(--warn); box-shadow: 0 0 22px rgba(245,158,11,0.22); color: var(--warn); }
+.percbanner .perc-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; animation: pulse 1.3s ease-in-out infinite; flex-shrink: 0; }
+.percbanner .perc-exit { background: transparent; border: 1px solid currentColor; color: currentColor; padding: 3px 9px; border-radius: var(--r-pill); font: 600 10px/1 'Geist Mono', monospace; cursor: pointer; }
+.percbanner .perc-exit:hover { background: var(--cyan); color: #04121c; }
 .dettick.flash { animation: dtflash .55s var(--ease-out, ease-out); }
 @keyframes dtflash { from { border-color: var(--ok); box-shadow: 0 0 18px rgba(74,222,128,0.45); } to { border-color: var(--border-strong); box-shadow: none; } }
 @media (prefers-reduced-motion: reduce) { .dettick.flash { animation: none; } .dettick .dt-dot { animation: none; } }
@@ -1287,6 +1298,7 @@ textarea#text::placeholder { color: var(--dim); }
       </div>
       <div class=scansweep aria-hidden=true></div>
       <svg class=tracks id=tracks viewBox='0 0 1000 1000' preserveAspectRatio=none></svg>
+      <div class=percbanner id=percbanner><span class=perc-dot></span><span id=perc-txt></span><button class=perc-exit id=perc-exit>Return to VLM</button></div>
       <div class=dettick id=dettick></div>
       <div class='hud-pill hud-tl livepill idle' id=livepill><span class=dot></span> idle</div>
       <div class='hud-pill hud-tr' id=hudtr><span>0.0 fps</span><span class=hud-sep>·</span><span class='hud-val'>—</span></div>
@@ -1569,7 +1581,8 @@ textarea#text::placeholder { color: var(--dim); }
   <div class=modal-content style="max-width:640px">
     <h2 style="display:flex;align-items:center;gap:10px">NANO · LIVE DIAGNOSTICS
       <span id=nano-mode style="font-size:11px;letter-spacing:.06em;color:var(--accent);border:1px solid var(--accent-soft);border-radius:6px;padding:2px 7px"></span>
-      <button class=chip id=nano-turbo style="margin-left:auto;font-size:11px">⚡ Turbo</button>
+      <button class=chip id=nano-perc onclick="window.nanoTogglePerc()" style="margin-left:auto;font-size:11px" title="Real-time OWL detection — pauses the VLM (8GB can't run both)">◉ Perceive</button>
+      <button class=chip id=nano-turbo style="font-size:11px">⚡ Turbo</button>
     </h2>
     <div id=nano-body style="font:500 12px/1.6 'Geist Mono',monospace"><div style="color:var(--muted)">Connecting to tegrastats…</div></div>
     <div style="color:var(--muted);font-size:11px;margin-top:12px">Orin Nano Super · 1024-core Ampere + 6-core A78 · throttles at 85 °C · live from tegrastats + INA3221</div>
@@ -1788,6 +1801,51 @@ async function tickDetections() {
   } catch (e) { }
 }
 setInterval(tickDetections, 3000); tickDetections();
+
+/* ===== perception mode (real-time NanoOWL boxes — pauses the VLM) ===== */
+let _percTimer = null;
+const PERC_QUERY = 'person, face, hand, chair, table, desk, laptop, monitor, keyboard, mouse, cup, bottle, can, phone, book, plant, bag, box, door, window, speaker, guitar';
+async function setPerception(on) {
+  toast(on ? 'Perception mode: pausing VLM, loading OWL…' : 'Returning to the VLM (~40s)…', 'ok');
+  try { await fetch('/perception', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ on }) }); } catch (e) { toast('Switch failed', 'warn'); }
+}
+function startPerceptionLoop() {
+  if (_percTimer) return;
+  const tick = async () => {
+    try {
+      const r = await fetch('/tool/detect_objects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ args: { query: PERC_QUERY, threshold: 0.08 } }) });
+      const j = await r.json();
+      if (j.ok) drawTracks((j.result && j.result.detections) || [], 2200);
+    } catch (e) { }
+  };
+  tick(); _percTimer = setInterval(tick, 1300);
+}
+function stopPerceptionLoop() { if (_percTimer) { clearInterval(_percTimer); _percTimer = null; } clearTracks(); }
+function applyPerception(m) {
+  const banner = $('#percbanner'); if (!banner) return;
+  const trans = m.perception_transition || '';
+  const active = !!m.perception_mode;
+  const ready = active && m.owl_up;
+  window._perceptionMode = active;
+  const chip = $('#nano-perc'); if (chip) { chip.classList.toggle('active', active); chip.textContent = active ? '◉ Perceiving' : '◉ Perceive'; }
+  if (trans) {
+    banner.className = 'percbanner on warn';
+    $('#perc-txt').textContent = 'PERCEPTION · ' + trans + '…';
+    stopPerceptionLoop();
+  } else if (ready) {
+    banner.className = 'percbanner on';
+    $('#perc-txt').textContent = 'PERCEPTION MODE · VLM PAUSED · live OWL detection';
+    startPerceptionLoop();
+  } else if (active && !m.owl_up) {
+    banner.className = 'percbanner on warn';
+    $('#perc-txt').textContent = 'PERCEPTION · waiting for OWL…';
+  } else {
+    banner.className = 'percbanner';
+    stopPerceptionLoop();
+  }
+}
+$('#perc-exit') && ($('#perc-exit').onclick = () => setPerception(false));
+window.nanoTogglePerc = () => setPerception(!window._perceptionMode);
 function entityListView() {
   $('#entity-detail').classList.add('hidden');
   $('#entities-list').classList.remove('hidden');
@@ -2070,6 +2128,7 @@ async function tickMetrics() {
     const sc = $('#seen-count'); if (sc) sc.textContent = m.vmem_count || 0;
     const tcb = document.getElementById('tools-count'); if (tcb) tcb.textContent = m.tool_count || 0;
     updateSysRail(m);
+    applyPerception(m);
     // live-refresh the activity ledger while it's the open pane
     const intelO = document.getElementById('intel');
     if (intelO && intelO.classList.contains('open')) {

@@ -1872,8 +1872,8 @@ def _vlm_memory_watchdog() -> None:
     while True:
         time.sleep(20)
         try:
-            if not cfg["enabled"]:
-                cfg["low_streak"] = 0
+            if not cfg["enabled"] or PERCEPTION["on"]:
+                cfg["low_streak"] = 0   # never refresh the VLM while OWL owns the GPU
                 continue
             avail = _mem_avail_mb()
             if avail >= cfg["min_avail_mb"]:
@@ -2125,6 +2125,60 @@ def set_jetson_clocks(on: bool) -> dict:
     return {"ok": True, "jetson_clocks": on}
 
 
+# ---- Perception mode: real-time NanoOWL detection -----------------------------
+# On 8GB the VLM (~3.8GB) and OWL (~1GB + TRT) cannot co-reside, so this is a
+# MODE SWITCH: stop one, start the other. The dashboard survives because
+# jarvis-voice Wants= (not Requires=) jarvis-vlm. Transition runs in a thread;
+# the UI polls owl_up/perception_mode in /metrics.
+PERCEPTION = {"on": False, "transition": "", "ts": 0.0}
+OWL_HEALTH = "http://127.0.0.1:8086/health"
+
+
+def _perception_transition(on: bool) -> None:
+    try:
+        if on:
+            PERCEPTION["transition"] = "stopping VLM"
+            subprocess.run(["sudo", "-n", "systemctl", "stop", "jarvis-vlm"],
+                           check=False, capture_output=True, timeout=30)
+            _VLM_UP["flag"] = False
+            PERCEPTION["transition"] = "freeing memory"
+            subprocess.run(["sudo", "-n", "sh", "-c",
+                            "sync; echo 3 > /proc/sys/vm/drop_caches; "
+                            "echo 1 > /proc/sys/vm/compact_memory"],
+                           check=False, capture_output=True, timeout=20)
+            PERCEPTION["on"] = True   # set before start so the watchdog won't fight
+            PERCEPTION["transition"] = "starting OWL"
+            subprocess.run(["sudo", "-n", "systemctl", "start", "jarvis-owl"],
+                           check=False, capture_output=True, timeout=90)
+            deadline = time.time() + 90
+            while time.time() < deadline:
+                try:
+                    if httpx.get(OWL_HEALTH, timeout=httpx.Timeout(2, 2, 2, 2)).status_code == 200:
+                        break
+                except Exception:  # noqa: BLE001
+                    pass
+                time.sleep(3)
+            PERCEPTION["transition"] = ""
+        else:
+            PERCEPTION["transition"] = "stopping OWL"
+            subprocess.run(["sudo", "-n", "systemctl", "stop", "jarvis-owl"],
+                           check=False, capture_output=True, timeout=30)
+            PERCEPTION["on"] = False
+            PERCEPTION["transition"] = "starting VLM"
+            subprocess.run(["sudo", "-n", "systemctl", "start", "jarvis-vlm"],
+                           check=False, capture_output=True, timeout=30)
+            PERCEPTION["transition"] = ""
+    except Exception as e:  # noqa: BLE001
+        PERCEPTION["transition"] = "error"
+        print(f"[perception] transition error: {e}", flush=True)
+
+
+def set_perception(on: bool) -> dict:
+    PERCEPTION["ts"] = time.time()
+    threading.Thread(target=_perception_transition, args=(on,), daemon=True).start()
+    return {"ok": True, "on": on, "transition": "switching"}
+
+
 def gather_metrics() -> dict:
     _ns = TEGRA.snapshot()
     m = read_meminfo()
@@ -2165,6 +2219,8 @@ def gather_metrics() -> dict:
         "vlm_ttft_ms": _VLM_PERF.get("ttft_ms"),
         "vlm_autorefresh": VLM_AUTOREFRESH["enabled"],
         "vlm_refreshes": VLM_AUTOREFRESH["refreshes"],
+        "perception_mode": PERCEPTION["on"],
+        "perception_transition": PERCEPTION["transition"],
     }
 
 
@@ -2913,6 +2969,14 @@ class H(BaseHTTPRequestHandler):
                 self._send_json(200, export_dataset(opts))
             except Exception as e:  # noqa: BLE001
                 self._send_json(500, {"ok": False, "error": str(e)})
+        elif p == "/perception":
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                payload = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "bad json"}); return
+            self._send_json(200, set_perception(bool(payload.get("on"))))
         elif p == "/nano/autorefresh":
             length = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(length) if length else b"{}"
