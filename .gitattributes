@@ -1,0 +1,4 @@
+# Shell scripts MUST stay LF — they run on the Jetson (Linux). A CRLF shebang
+# (`#!/usr/bin/env bash\r`) fails with "bash\r: No such file or directory".
+*.sh text eol=lf
+scripts/*.service text eol=lf
