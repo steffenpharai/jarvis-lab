@@ -3037,7 +3037,7 @@ def run_investigate(ctx: ToolContext, *, subject: str = "", point=None,
         locate_method = "region"
     elif point and len(point) == 2:
         px, py = float(point[0]), float(point[1])
-        side = 0.30
+        side = 0.20   # tight crop so the TAPPED object dominates, not surroundings
         bbox = (max(0.0, px - side / 2), max(0.0, py - side / 2), side, side)
         bbox = (bbox[0], bbox[1], min(side, 1.0 - bbox[0]),
                 min(side, 1.0 - bbox[1]))
@@ -3075,8 +3075,14 @@ def run_investigate(ctx: ToolContext, *, subject: str = "", point=None,
 
     # ---- identify (fine-grained) -----------------------------------------
     emit({"phase": "identifying"})
-    subj_clause = (f"Focus on the {subject}. " if subject else
-                   "Focus on the most prominent / central subject. ")
+    if subject:
+        subj_clause = f"Focus on the {subject}. "
+    elif locate_method == "point":
+        subj_clause = ("The user tapped a precise spot in the scene — identify "
+                       "the single object at the CENTER of this crop, ignoring "
+                       "the background, the chair, and anything at the edges. ")
+    else:
+        subj_clause = "Focus on the most prominent / central subject. "
     id_prompt = (
         "You are a visual identification expert looking at an enhanced, "
         "zoomed-in crop. " + subj_clause +
