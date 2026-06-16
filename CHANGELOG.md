@@ -3,6 +3,17 @@
 Pushed the on-device frontier further and hardened the 8 GB engineering.
 Highlights (newest first):
 
+- **Companion orb — neural "thinking" cloud (synapses firing like a brain).**
+  When Jarvis reasons, you now see it think: a brain-like shell of 240 neurons
+  wired by 444 k-nearest-neighbour **synapses** that ignite, with **signal sparks**
+  travelling along the firing edges and nodes flashing — a real-time storm. It's a
+  faint background flicker normally (~6% opacity, "alive but calm") and erupts into
+  a full cloud in the `thinking` state (synaptic firing ~26× idle, the spark pool
+  fully saturates, trails linger, and the ambient halo recedes so the network
+  reads). Driven by an eased `think` factor; electric near-white tint of the state
+  colour. All additive LineSegments/Points in the same WebGL scene, reduced-motion
+  aware, viewer-GPU only (zero Jetson load). `window.__orbStats()` exposes the live
+  firing for verification.
 - **Companion orb — frontier visual redesign (iridescent fluid energy core).**
   Research-grounded pass (Apple Siri '26 iridescent metal, OpenAI's fluid morphing
   sphere, Google Gemini's "energy/directionality" gradients): the orb is no longer

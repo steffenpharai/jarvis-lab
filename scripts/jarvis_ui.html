@@ -4085,6 +4085,60 @@ try {
   const halo = new THREE.Points(pg, pMat);
   scene.add(halo);
 
+  // --- neural "thinking" cloud: a brain of neurons whose synapses fire ---
+  // Faint when idle; erupts into a full storm in the `thinking` state (signal
+  // sparks travel along igniting edges, nodes flash). All additive, viewer-GPU.
+  const NEUR = isMobile ? 120 : 240;
+  const npos = new Float32Array(NEUR * 3);
+  for (let i = 0; i < NEUR; i++) {
+    const u = Math.random(), v = Math.random();
+    const th = 2 * Math.PI * u, ph = Math.acos(2 * v - 1);
+    const r = 0.85 + Math.sqrt(Math.random()) * 0.52;   // kept within the frustum
+    npos[i*3]   = r * Math.sin(ph) * Math.cos(th) * 1.05;
+    npos[i*3+1] = r * Math.sin(ph) * Math.sin(th) * 0.97;
+    npos[i*3+2] = r * Math.cos(ph) * 0.97;
+  }
+  // synapses = k-nearest-neighbour edges (deduped)
+  const edges = []; const seenE = new Set();
+  for (let i = 0; i < NEUR; i++) {
+    const ds = [];
+    for (let j = 0; j < NEUR; j++) { if (j === i) continue;
+      const dx=npos[i*3]-npos[j*3], dy=npos[i*3+1]-npos[j*3+1], dz=npos[i*3+2]-npos[j*3+2];
+      ds.push([dx*dx+dy*dy+dz*dz, j]); }
+    ds.sort((a,b)=>a[0]-b[0]);
+    for (let n = 0; n < 3; n++) { const j = ds[n][1]; const a = Math.min(i,j), b = Math.max(i,j);
+      const key = a*NEUR+b; if (!seenE.has(key)) { seenE.add(key); edges.push([a,b]); } }
+  }
+  const EDG = edges.length;
+  const lpos = new Float32Array(EDG*6), lcol = new Float32Array(EDG*6);
+  for (let e = 0; e < EDG; e++) { const a = edges[e][0], b = edges[e][1];
+    lpos[e*6]=npos[a*3]; lpos[e*6+1]=npos[a*3+1]; lpos[e*6+2]=npos[a*3+2];
+    lpos[e*6+3]=npos[b*3]; lpos[e*6+4]=npos[b*3+1]; lpos[e*6+5]=npos[b*3+2]; }
+  const lgeo = new THREE.BufferGeometry();
+  lgeo.setAttribute('position', new THREE.BufferAttribute(lpos, 3));
+  lgeo.setAttribute('color', new THREE.BufferAttribute(lcol, 3));
+  const synapses = new THREE.LineSegments(lgeo, new THREE.LineBasicMaterial({
+    vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+  // neuron nodes
+  const ncol = new Float32Array(NEUR*3);
+  const ngeo = new THREE.BufferGeometry();
+  ngeo.setAttribute('position', new THREE.BufferAttribute(npos, 3));
+  ngeo.setAttribute('color', new THREE.BufferAttribute(ncol, 3));
+  const neurons = new THREE.Points(ngeo, new THREE.PointsMaterial({
+    size: 0.05, vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+  // travelling signal sparks (ride a firing edge from one neuron to the next)
+  const NS = isMobile ? 24 : 48;
+  const spos = new Float32Array(NS*3), scol = new Float32Array(NS*3);
+  const sparkEdge = new Int32Array(NS).fill(-1), sparkT = new Float32Array(NS), sparkSpd = new Float32Array(NS);
+  const sgeo = new THREE.BufferGeometry();
+  sgeo.setAttribute('position', new THREE.BufferAttribute(spos, 3));
+  sgeo.setAttribute('color', new THREE.BufferAttribute(scol, 3));
+  const sparks = new THREE.Points(sgeo, new THREE.PointsMaterial({
+    size: 0.1, vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+  const edgeI = new Float32Array(EDG);    // firing intensity per synapse
+  const nBright = new Float32Array(NEUR);  // recent-fire brightness per neuron
+  const brain = new THREE.Group(); brain.add(synapses, neurons, sparks); scene.add(brain);
+
   // --- soft glow sprite behind (fakes bloom, cheap) ---
   const gc = document.createElement('canvas'); gc.width = gc.height = 128;
   const gx = gc.getContext('2d');
@@ -4127,7 +4181,7 @@ try {
   new ResizeObserver(size).observe(canvas);
 
   // eased animation state (frame-rate independent; cumulative angles so speeds can vary)
-  let smoothLevel = 0, energy = 1, vortex = 0, haloTilt = 0;
+  let smoothLevel = 0, energy = 1, vortex = 0, haloTilt = 0, think = 0;
   let rotCore = 0, rotHalo = 0, rotHaloZ = 0, lastRipple = -99;
   const rm = reduceMotion ? 0 : 1;           // motion gate
   let running = true, t0 = performance.now(), tPrev = t0;
@@ -4176,6 +4230,7 @@ try {
     rotHaloZ += 0.05 * espd * dt;
     vortex += (vortexTarget * rm - vortex) * Math.min(1, dt * 3);
     haloTilt += (tiltTarget * rm - haloTilt) * Math.min(1, dt * 3);
+    think += ((state === 'thinking' ? 1 : 0) - think) * Math.min(1, dt * 2.5);
 
     coreMat.uniforms.uTime.value = t;
     coreMat.uniforms.uLevel.value = lvl;
@@ -4183,7 +4238,7 @@ try {
     innerMat.uniforms.uLevel.value = lvl;        // shares curColor by reference → hue auto-tracks
     pMat.color.copy(curColor); glow.material.color.copy(curColor);
     glow.material.opacity = (0.32 + lvl * 0.5) * energy;
-    pMat.opacity = (0.5 + lvl * 0.4) * energy;
+    pMat.opacity = (0.5 + lvl * 0.4) * energy * (1 - think * 0.55);  // halo recedes so synapses read
     core.rotation.y = rotCore; core.rotation.x = rotCore * 0.48;
     innerCore.rotation.y = -rotCore * 1.6; innerCore.rotation.z = rotCore * 0.9;  // counter-spin = depth
     halo.rotation.y = rotHalo; halo.rotation.z = rotHaloZ; halo.rotation.x = haloTilt;
@@ -4207,9 +4262,56 @@ try {
       } else if (sp.material.opacity !== 0) { sp.material.opacity = 0; }
     }
 
+    // --- neural thinking cloud: ignite synapses, fire travelling sparks ---
+    if (rm && EDG > 0) {
+      const cloudVis = (0.06 + think * 0.94) * energy;            // faint idle → full storm thinking
+      const fire = 0.02 + think * 0.95 + lvl * 0.2;
+      // electric tint: bias the state colour toward cyan-white so firings read like lightning
+      const cr = curColor.r * 0.45 + 0.62, cg = curColor.g * 0.45 + 0.74, cb = curColor.b * 0.45 + 0.95;
+      // stochastic ignitions this frame
+      let cnt = fire * (isMobile ? 7 : 13) * (dt * 60);
+      let ig = Math.floor(cnt) + (Math.random() < (cnt % 1) ? 1 : 0);
+      for (let q = 0; q < ig; q++) {
+        const e = (Math.random() * EDG) | 0; edgeI[e] = 1;
+        nBright[edges[e][0]] = 1; nBright[edges[e][1]] = 1;
+        for (let s = 0; s < NS; s++) { if (sparkEdge[s] < 0) { sparkEdge[s] = e; sparkT[s] = 0; sparkSpd[s] = 2.2 + Math.random() * 2.6; break; } }
+      }
+      const dE = Math.exp(-dt * (think > 0.5 ? 2.6 : 4.2));       // longer trails while thinking
+      const dN = Math.exp(-dt * 3.2);
+      for (let e = 0; e < EDG; e++) {
+        edgeI[e] *= dE; const v = edgeI[e] * cloudVis, o = e * 6;
+        const r = cr*v, g = cg*v, b = cb*v;
+        lcol[o]=r; lcol[o+1]=g; lcol[o+2]=b; lcol[o+3]=r; lcol[o+4]=g; lcol[o+5]=b;
+      }
+      lgeo.attributes.color.needsUpdate = true;
+      for (let i = 0; i < NEUR; i++) {
+        nBright[i] *= dN; const v = 0.1 * cloudVis + nBright[i] * cloudVis * 1.1;
+        ncol[i*3]=cr*v; ncol[i*3+1]=cg*v; ncol[i*3+2]=cb*v;
+      }
+      ngeo.attributes.color.needsUpdate = true;
+      for (let s = 0; s < NS; s++) {
+        const e = sparkEdge[s];
+        if (e < 0) { scol[s*3]=scol[s*3+1]=scol[s*3+2]=0; continue; }
+        sparkT[s] += dt * sparkSpd[s];
+        if (sparkT[s] >= 1) { sparkEdge[s] = -1; scol[s*3]=scol[s*3+1]=scol[s*3+2]=0; continue; }
+        const a = edges[e][0], b = edges[e][1], tt = sparkT[s];
+        spos[s*3]   = npos[a*3]   + (npos[b*3]   - npos[a*3])   * tt;
+        spos[s*3+1] = npos[a*3+1] + (npos[b*3+1] - npos[a*3+1]) * tt;
+        spos[s*3+2] = npos[a*3+2] + (npos[b*3+2] - npos[a*3+2]) * tt;
+        const f = Math.sin(tt * Math.PI) * cloudVis * 1.5;       // brightest mid-travel
+        scol[s*3]=cr*f; scol[s*3+1]=cg*f; scol[s*3+2]=cb*f;
+      }
+      sgeo.attributes.position.needsUpdate = true; sgeo.attributes.color.needsUpdate = true;
+      brain.rotation.y = rotCore * 0.5; brain.rotation.x = Math.sin(t * 0.2) * 0.15;
+    }
+
     renderer.render(scene, cam);
   }
   loop();
+  // lightweight introspection of the neural sim (ground-truth firing, for verification)
+  window.__orbStats = () => { let es = 0; for (let i = 0; i < EDG; i++) es += edgeI[i];
+    let sp = 0; for (let i = 0; i < NS; i++) if (sparkEdge[i] >= 0) sp++;
+    return { edgeFireSum: +es.toFixed(2), activeSparks: sp, think: +think.toFixed(2), EDG, NS }; };
   window.__orbReady = true;
 } catch (e) {
   console.warn('[orb] WebGL presence orb disabled:', e.message);
