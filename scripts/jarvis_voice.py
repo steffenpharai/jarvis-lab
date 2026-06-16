@@ -55,7 +55,10 @@ DB_PATH       = LAB / "logs/jarvis.db"
 
 MIC_DEVICE = "plughw:CARD=C615,DEV=0"
 CAM_DEVICE = "/dev/video0"
-CAM_W, CAM_H = 640, 480
+# 1280x720 MJPEG (the C615 supports it): sharper investigate/zoom crops and a
+# crisper feed. VLM turns stay fast — capture_frame_for_vlm still downscales to
+# VLM_W x VLM_H (512x384) before inference; only crop detail improves.
+CAM_W, CAM_H = 1280, 720
 VLM_W, VLM_H = 512, 384
 CAM_FPS = 10
 SAMPLE_RATE = 16000
