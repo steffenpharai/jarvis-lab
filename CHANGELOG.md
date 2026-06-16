@@ -3,6 +3,13 @@
 Pushed the on-device frontier further and hardened the 8 GB engineering.
 Highlights (newest first):
 
+- **Barge-in — interrupt Jarvis by talking over him.** In conversation mode, while
+  he's speaking (and through the post-reply TTS playback) the client watches the live
+  mic level on a dedicated `/audio_meter` stream; sustained voice cuts the TTS,
+  cancels the in-flight turn, and immediately re-opens the mic to catch what you're
+  saying — no waiting for him to finish. A grace period + sustained-frames + level
+  threshold (`BARGE_THRESH`) resist false triggers (ambient noise, or the Jetson mic
+  faintly hearing playback); raise the threshold if it ever self-interrupts.
 - **Hands-free conversation mode.** No more tapping the orb for every reply.
   Toggle **Converse** (or say "Hey Jarvis", or `C` / `/converse`) and Jarvis
   listens, you talk, it replies, then it listens again — a continuous back-and-

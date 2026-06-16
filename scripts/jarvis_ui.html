@@ -2674,6 +2674,7 @@ function attachTurn(turn_id, jmsg, kind) {
     let m; try { m = JSON.parse(ev.data); } catch { return; }
     const ph = m.phase;
     if (ph === 'recording') {
+      stopBargeListen();   // user's turn now — don't barge on their own voice
       setLive('recording', 'listening · ' + (m.seconds || 6) + 's');
       orb.classList.add('recording'); composer.classList.add('recording');
       phaseBadge.textContent = 'listening'; attachAudioMeter();
@@ -2717,9 +2718,11 @@ function attachTurn(turn_id, jmsg, kind) {
       raw += m.delta; scheduleRender(); sayReply(raw);
     } else if (ph === 'audio_segment') {
       enqueueSegment(m, bubble);
+      if (convoOn) startBargeListen();   // armed as soon as there's audio to interrupt
     } else if (ph === 'speaking') {
       setLive('idle', 'speaking'); phaseBadge.textContent = 'speaking';
       reasonPush('see', 'reply ready');
+      if (convoOn) startBargeListen();
     } else if (ph === 'cancelled') {
       phaseBadge.textContent = 'stopped'; bubble.classList.remove('streaming');
     } else if (ph === 'error') {
@@ -2811,18 +2814,21 @@ function setConvo(on, reason) {
   }
   document.body.classList.toggle('convo-on', on);
   if (on) { toast('Conversation mode — just talk, no clicking', 'wake'); convoListen(); }
-  else { setLive('idle', 'idle'); if (reason) toast(reason, 'ok'); }
+  else { stopBargeListen(); clearTimeout(convoTimer); setLive('idle', 'idle'); if (reason) toast(reason, 'ok'); }
 }
 function convoListen() {
   if (!convoOn || isStreaming) return;
+  clearTimeout(convoTimer); stopBargeListen();
   doTurn({ kind: 'talk', convo: true, seconds: 12 });
 }
 function convoAfterReply() {
   if (!convoOn) return;
-  // wait for the queued TTS to finish playing, then listen again
+  // wait for the queued TTS to finish playing, then listen again (barge-in can
+  // cut this short if the user talks during playback)
   let wait = 350;
   try { if (audioCtx && nextStartTime > audioCtx.currentTime) wait = (nextStartTime - audioCtx.currentTime) * 1000 + 400; } catch {}
-  setTimeout(() => { if (convoOn && !isStreaming) convoListen(); }, Math.min(Math.max(wait, 300), 30000));
+  clearTimeout(convoTimer);
+  convoTimer = setTimeout(() => { if (convoOn && !isStreaming) convoListen(); }, Math.min(Math.max(wait, 300), 30000));
 }
 // called by attachTurn when any talk turn finishes (reply, no_speech, or error)
 function notifyTurnComplete(res, kind) {
@@ -2832,7 +2838,8 @@ function notifyTurnComplete(res, kind) {
     convoEmpty++;
     if (convoEmpty >= 2) { setConvo(false, 'No reply heard — say “Hey Jarvis” or tap to resume'); return; }
     setLive('idle', 'listening…');
-    setTimeout(() => { if (convoOn && !isStreaming) convoListen(); }, 450);
+    clearTimeout(convoTimer);
+    convoTimer = setTimeout(() => { if (convoOn && !isStreaming) convoListen(); }, 450);
     return;
   }
   convoEmpty = 0;
@@ -2840,6 +2847,43 @@ function notifyTurnComplete(res, kind) {
   convoAfterReply();
 }
 if (convotoggle) convotoggle.onclick = () => setConvo(!convoOn);
+
+/* ----- barge-in: interrupt Jarvis just by talking over him -----
+   While Jarvis speaks (and during the post-reply TTS playback) we watch the live
+   mic level on a dedicated /audio_meter stream. Sustained voice → cut him off and
+   listen. Grace + sustained-frames resist false triggers (incl. the Jetson mic
+   faintly hearing playback). Raise BARGE_THRESH if it ever self-interrupts. */
+let bargeES = null, bargeHits = 0, bargeArmTs = 0, convoTimer = null;
+const BARGE_THRESH = 0.22;     // normalized mic level (rms/8000)
+const BARGE_FRAMES = 5;        // consecutive-ish voice samples required (~0.4s)
+const BARGE_GRACE_MS = 600;    // ignore transients right after he starts speaking
+function startBargeListen() {
+  if (!convoOn || bargeES) return;
+  bargeHits = 0; bargeArmTs = performance.now();
+  bargeES = new EventSource('/audio_meter');
+  bargeES.onmessage = (e) => { const lv = parseFloat(e.data); if (!isNaN(lv)) checkBarge(lv); };
+  bargeES.onerror = () => { try { bargeES.close(); } catch {} bargeES = null; };
+}
+function stopBargeListen() { if (bargeES) { try { bargeES.close(); } catch {} bargeES = null; } bargeHits = 0; }
+function checkBarge(lv) {
+  if (!convoOn || !bargeES) return;
+  if (performance.now() - bargeArmTs < BARGE_GRACE_MS) return;
+  bargeHits = lv >= BARGE_THRESH ? bargeHits + 1 : Math.max(0, bargeHits - 1);
+  if (bargeHits >= BARGE_FRAMES) triggerBarge();
+}
+function triggerBarge() {
+  stopBargeListen();
+  clearTimeout(convoTimer);
+  resetAudioQueue();                              // cut the TTS off immediately
+  const t = currentTurn;
+  if (t) {
+    if (t.id) { try { fetch('/turn/' + t.id + '/stop', { method: 'POST' }); } catch {} }
+    if (t.es) { try { t.es.close(); } catch {} }
+  }
+  currentTurn = null; isStreaming = false; setComposerBusy(false);
+  toast('Go ahead…', 'wake'); setLive('recording', 'listening');
+  convoListen();                                  // re-open the mic to catch what you're saying
+}
 
 /* ===== Iron-Man Vision: investigate (locate -> zoom -> identify -> web) ===== */
 const reticle = $('#reticle'), rlabel = $('#rlabel');
