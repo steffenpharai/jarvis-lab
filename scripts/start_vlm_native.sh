@@ -23,11 +23,12 @@ exec $SBIN/llama-server \
   --ctx-size 4096 \
   --parallel 1 \
   --cache-ram 0 \
+  --fit off \
   --batch-size 512 \
   --ubatch-size 512 \
   --jinja \
   -fa on \
-  --mmproj-offload \
+  --no-mmproj-offload \
   --host 127.0.0.1 --port 8080
 # --parallel 1: the dashboard serializes every VLM call (VLM_BUSY), so the
 #   auto-chosen 4 KV slots were pure waste of unified memory.
