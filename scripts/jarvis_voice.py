@@ -1204,7 +1204,11 @@ def stream_vlm(question: str, frame_jpg: Path,
                     usage = obj["usage"]
                 if obj.get("timings"):
                     usage["timings"] = obj["timings"]
-                delta = obj.get("choices", [{}])[0].get("delta", {}).get("content")
+                # NB: with stream_options.include_usage, llama.cpp sends a final
+                # chunk with "choices": [] — `.get(...,[{}])` doesn't catch an
+                # empty list, so guard with `or [{}]` to avoid an IndexError that
+                # would crash the whole stream (broke the captioner + perf).
+                delta = (obj.get("choices") or [{}])[0].get("delta", {}).get("content")
                 if delta is None:
                     continue
                 if first_tok_at is None:
@@ -3002,8 +3006,18 @@ class H(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": "bad json"}); return
             self._send_json(200, set_jetson_clocks(bool(payload.get("on"))))
         elif p == "/memory/visual/capture":
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length) if length else b"{}"
             try:
-                rec = VMEM.capture_now(source="manual")
+                body = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                body = {}
+            # bg=true → background caption (priority=False): yields to interactive
+            # turns and skips when the VLM is busy (used by the live ticker refresh)
+            bg = bool(body.get("bg"))
+            try:
+                rec = VMEM.capture_now(source="ticker" if bg else "manual",
+                                       priority=not bg)
                 self._send_json(200, {"ok": True, "item": rec})
             except Exception as e:  # noqa: BLE001
                 self._send_json(500, {"ok": False, "error": str(e)})

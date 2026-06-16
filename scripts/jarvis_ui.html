@@ -1112,6 +1112,9 @@ textarea#text::placeholder { color: var(--dim); }
 .dettick .dt-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 7px rgba(74,222,128,0.7); animation: pulse 1.6s ease-in-out infinite; flex-shrink: 0; }
 .dettick .dt-lbl { font: 600 9px/1 'Geist Mono', monospace; letter-spacing: .14em; color: var(--ok); text-transform: uppercase; flex-shrink: 0; }
 .dettick .dt-chip { font: 500 10.5px/1 'Geist Mono', monospace; color: var(--text); background: var(--accent-soft); border: 1px solid var(--border); border-radius: var(--r-pill); padding: 3px 8px; text-transform: capitalize; white-space: nowrap; flex-shrink: 0; }
+.dettick .dt-age { font: 600 9px/1 'Geist Mono', monospace; letter-spacing: .06em; color: var(--dim); flex-shrink: 0; margin-left: 2px; }
+.dettick.stale .dt-dot { background: var(--warn); box-shadow: 0 0 7px rgba(245,158,11,0.6); animation: none; }
+.dettick.stale .dt-lbl { color: var(--warn); }
 /* perception-mode banner (real-time OWL detection; VLM paused) */
 .percbanner { position: absolute; top: 50px; left: 50%; transform: translateX(-50%); z-index: 39;
   display: none; align-items: center; gap: 10px; padding: 7px 10px 7px 14px; border-radius: var(--r-pill);
@@ -1784,17 +1787,32 @@ function parseObjs(s) {
   if (s[0] === '[') { try { const a = JSON.parse(s); if (Array.isArray(a)) return a.map(x => String(x).trim()).filter(Boolean); } catch (e) { } }
   return s.split(/[;,\n]/).map(x => x.trim()).filter(Boolean);
 }
+let _lastTickCap = 0;
 async function tickDetections() {
   const tick = $('#dettick'); if (!tick) return;
   if (window._perceptionMode) { tick.classList.remove('on'); return; }  // OWL boxes take over
   try {
-    const j = await (await fetch('/memory/visual/recent')).json();
+    const items = (await (await fetch('/memory/visual/recent')).json()).items || [];
+    const now = Date.now() / 1000;
+    // keep it LIVE: the ambient captioner only logs on scene-change, so a static
+    // scene goes stale. When the freshest keyframe ages out, ask for a background
+    // re-caption of the current view (priority=false → yields to interactive turns).
+    const newestAge = items.length ? now - (items[0].ts || 0) : 1e9;
+    if (newestAge > 9 && (now - _lastTickCap) > 9) {
+      _lastTickCap = now;
+      fetch('/memory/visual/capture', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bg: true }) }).catch(() => { });
+    }
     // most recent keyframe that actually has detections (some are empty)
-    const latest = (j.items || []).find(it => parseObjs(it.objects).length);
+    const latest = items.find(it => parseObjs(it.objects).length);
     const objs = latest ? parseObjs(latest.objects).slice(0, 6) : [];
     if (!objs.length) { tick.classList.remove('on'); return; }
-    tick.innerHTML = '<span class=dt-dot></span><span class=dt-lbl>Detecting</span>' +
-      objs.map(o => '<span class=dt-chip>' + escapeHtml(o) + '</span>').join('');
+    const age = Math.max(0, Math.round(now - (latest.ts || now)));
+    const ageStr = age < 5 ? 'live' : (age < 60 ? age + 's' : Math.round(age / 60) + 'm');
+    const stale = age >= 30;
+    tick.innerHTML = '<span class=dt-dot></span><span class=dt-lbl>' + (stale ? 'Last seen' : 'Detecting') + '</span>' +
+      objs.map(o => '<span class=dt-chip>' + escapeHtml(o) + '</span>').join('') +
+      '<span class=dt-age>' + ageStr + '</span>';
+    tick.classList.toggle('stale', stale);
     tick.classList.add('on');
     if (latest.id !== _lastDetId) { _lastDetId = latest.id; tick.classList.remove('flash'); void tick.offsetWidth; tick.classList.add('flash'); }
   } catch (e) { }
