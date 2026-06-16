@@ -3,6 +3,19 @@
 Pushed the on-device frontier further and hardened the 8 GB engineering.
 Highlights (newest first):
 
+- **Agent turns go text-only unless the question is visual (stops VLM crashes).**
+  The agent loop was feeding the camera image into *every* VLM call (`use_frame`
+  always on) — the ~800 MB mmproj encode is the 8 GB box's main SIGABRT trigger, so
+  "what's the weather?" was crashing the VLM mid-turn (tool ran, then it died with
+  no answer). Now `run_turn` attaches the frame only for genuinely visual questions
+  (`_needs_vision()` cue list); weather/web/time/lights/etc. run text-only — lighter,
+  faster, and crash-free. The agent can still call a vision tool (investigate /
+  zoom_into / read_all_text) on demand. Verified: "weather in Paris" → vision=false,
+  weather tool, full spoken answer, no crash.
+- **The UI "Wake" button now speaks a confirmation.** Clicking Wake used to be a
+  silent power transition (only *saying* "wake up" spoke back). It now warms the VLM
+  and immediately says "Waking up, sir — fully online in a moment" via an instant
+  greet turn (TTS only, no camera/VLM). (The greet path accepts a custom message.)
 - **Wake word now persists + auto-starts (it was silently dying on restart).** The
   "Hey Jarvis" listener is an in-process thread and the enabled flag wasn't saved, so
   every service restart left it off — "Hey Jarvis" got no response. Now a small

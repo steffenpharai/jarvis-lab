@@ -1992,8 +1992,14 @@ function applyPower(m) {
   // wake pill while the banner is up so they don't overlap.
   document.body.classList.toggle('pwr-banner', b.classList.contains('on'));
 }
-$('#eco-wake') && ($('#eco-wake').onclick = () => setPower('wake'));
-window.powerAction = (a) => setPower(a);
+// Waking from the UI: warm the VLM AND speak an immediate confirmation (a greet
+// turn = TTS only, no camera/VLM) so it's not a silent transition.
+function wakeWithConfirm() {
+  setPower('wake');
+  if (!isStreaming) doTurn({ kind: 'talk', greet: true, greet_msg: 'Waking up, sir — fully online in a moment.' });
+}
+$('#eco-wake') && ($('#eco-wake').onclick = () => wakeWithConfirm());
+window.powerAction = (a) => { if (a === 'wake') wakeWithConfirm(); else setPower(a); };
 
 /* ===== topbar dropdown menus (Power / Views / More) ===== */
 function _closeMenus() { document.querySelectorAll('.tbpop.open').forEach(m => m.classList.remove('open')); }
@@ -2004,7 +2010,7 @@ function _closeMenus() { document.querySelectorAll('.tbpop.open').forEach(m => m
 });
 document.addEventListener('click', _closeMenus);
 window.addEventListener('keydown', e => { if (e.key === 'Escape') _closeMenus(); });
-$('#pm-wake') && ($('#pm-wake').onclick = () => setPower('wake'));
+$('#pm-wake') && ($('#pm-wake').onclick = () => wakeWithConfirm());
 $('#pm-eco') && ($('#pm-eco').onclick = () => setPower('eco'));
 $('#pm-reboot') && ($('#pm-reboot').onclick = () => setPower('reboot'));
 $('#pm-off') && ($('#pm-off').onclick = () => setPower('shutdown'));
@@ -2622,7 +2628,7 @@ async function doTurn(payload) {
   else if (payload.kind === 'talk') userText = '(listening…)';
   else if (payload.kind === 'point') userText = 'What is at this spot?';
   else if (payload.kind === 'regenerate') userText = '(regenerating)';
-  if (payload.kind !== 'regenerate') makeUserMsg(userText, payload.kind);
+  if (payload.kind !== 'regenerate' && !payload.greet) makeUserMsg(userText, payload.kind);
 
   const jmsg = makeJarvisMsg(payload.kind);
   switchPane('conv');
