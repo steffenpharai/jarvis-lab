@@ -425,3 +425,76 @@ memory): Figure Helix **dual-loop**, Anduril Lattice **common-operating-picture*
 **spatial-temporal memory**, Ambient.ai Pulsar **proactive monitoring**, and the
 universal edge recipe *cheap-detector → keyframed VLM → local memory → cloud
 only when asked*.
+
+---
+
+## 13. v4 — Data engine, full diagnostics, self-healing, perception mode (2026-06)
+
+Layers added to push the on-device frontier and harden the 8 GB engineering.
+
+### 13.1 Training-dataset export ("robotics data engine")
+`export_dataset()` ([jarvis_voice.py](scripts/jarvis_voice.py)) turns the
+`visual_memory` keyframes (auto-captioned at the edge) + grounded `turns` into a
+portable, **Open-X / LeRobot-friendly** bundle: `data/vision_language.jsonl`
+(image + caption + objects), `data/visual_qa.jsonl` (image + Q&A), copied frames,
+a machine-readable `meta/info.json` feature schema, a `meta/consent.json`
+provenance record, and a human-readable `DATASET_CARD.md`. Served at
+`/dataset/export|exports|card|dl`. This is **observational vision-language data**
+(`action=null`) — its value is being *auto-annotated on-device at zero marginal
+cost*; action-conditioned (VLA) trajectories require wiring the same loop into a
+robot's drive path (`frame → commanded velocity` = the action label).
+
+### 13.2 Full Nano diagnostics + turbo (`TegraStats`)
+A background thread parses a persistent `tegrastats` stream into a jtop-grade
+snapshot — per-core CPU load+freq, GPU (GR3D), EMC, every thermal zone +
+throttle headroom, INA3221 power rails (now/avg), disk, network — plus nvpmodel
+mode + governor. Exposed at `/nano`; the headline fields fold into `/metrics`.
+`jetson_clocks` **turbo** (`/nano/jetson_clocks`) locks clocks to max for peak
+throughput (stores pre-boost state for a clean restore). Read-only, zero GPU
+cost; degrades gracefully if `tegrastats` is absent. The HUD renders it as the
+NANO panel with live GPU/PWR/TEMP trend graphs.
+
+### 13.3 Self-healing VLM memory watchdog
+The 8 GB ceiling is the real limiter: when `MemAvailable` collapses, llama.cpp
+stalls on the ~800 MB-contiguous mmproj vision prefill and returns nothing. A
+watchdog auto-refreshes `jarvis-vlm` (reclaims ~3 GB) when memory stays low —
+**only when idle, never mid-inference (holds `VLM_BUSY`), and rate-limited**.
+This required decoupling the dashboard from VLM restarts: `jarvis-voice.service`
+`Requires=`→`Wants=jarvis-vlm` (boot ordering kept via `After=` + a `/health`
+`ExecStartPre`), so a refresh no longer cascade-restarts the UI. Tunable via
+`/nano/autorefresh`.
+
+### 13.4 VLM KV-prefix cache + inference telemetry
+The VLM request sets `cache_prompt` so llama.cpp reuses the cached
+system+history prefix across turns (less prefill). The streamed `timings` /
+`usage` are parsed into a rolling perf snapshot (tok/s, TTFT, prefill ms,
+cache-reuse), surfaced at `/nano`, `/metrics`, and on the HUD. **Gotcha:**
+`stream_options.include_usage` makes llama.cpp emit a final chunk with
+`"choices": []`; indexing it naively (`get("choices",[{}])[0]`) raised
+`IndexError` and crashed the whole stream — guarded with `(… or [{}])[0]`.
+
+### 13.5 Perception mode (real-time NanoOWL ⊕ VLM)
+On 8 GB the VLM (~3.8 GB) and OWL (~1 GB + TRT) cannot co-reside, so perception
+mode is a **systemd-enforced mode switch**, not co-residency: `jarvis-owl.service`
+declares `Conflicts=jarvis-vlm` (was `Wants=`, a co-residency leftover that pulled
+the VLM back and OOM'd OWL). `/perception {on}` runs a threaded transition (stop
+VLM → CMA preflight → start OWL, and back); the UI shows a "VLM PAUSED" banner and
+polls `detect_objects` for live boxes. The watchdog is suppressed while perception
+is on. The detector's tuning is an open follow-up; the swap orchestration is solid.
+
+### 13.6 Fork-free image capture (the un-obvious 8 GB fix)
+With free RAM routinely <100 MB, `subprocess`-forking the multi-GB Python process
+for ffmpeg (pHash, crop/scale, captioner) **stalls for seconds** (copy-on-write
+page-table setup under pressure) and was breaking every interactive turn at the
+capture phase. `phash_frame`, `capture_frame_for_vlm`, and `VisualMemory.capture_now`
+now decode/crop/scale **in-process with PIL** — no fork, ~1 ms, robust. (Piper TTS
+is still a binary fork; `on_token()` is wrapped so a TTS failure can't abort the
+VLM stream.)
+
+### 13.7 Camera resolution + coordinate fidelity
+The stream was bumped 640×480 → **1280×720** (the C615 does MJPEG to 1080p) so
+investigate crops are ~3× sharper; VLM turns stay fast because
+`capture_frame_for_vlm` downscales to 512×384 regardless. The feed `<img>` is
+`object-fit: cover`, so tap-to-crop and the targeting reticle apply an explicit
+**cover transform** (image-px ↔ element-%) — otherwise the crop and the box point
+at different pixels when the window isn't 16:9.

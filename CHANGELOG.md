@@ -1,3 +1,58 @@
+## 2026-06-15 — session 4 (data engine, full diagnostics, self-healing, live detection)
+
+Pushed the on-device frontier further and hardened the 8 GB engineering.
+Highlights (newest first):
+
+- **Training-dataset export ("robotics data engine")** — `export_dataset` turns
+  the visual memory + grounded Q&A into a portable, standards-aligned bundle
+  (Open-X / LeRobot-friendly JSONL + frames + a consent/provenance card).
+  Endpoints `POST /dataset/export`, `GET /dataset/exports`, `/dataset/card/<n>`,
+  `/dataset/dl/<n>.zip`; `export_dataset` agent tool; HUD "Training data" panel.
+  Observational vision-language data (`action=null`) — action labels need the robot.
+- **Full Nano diagnostics + turbo** — a `TegraStats` sampler parses a persistent
+  `tegrastats` stream: per-core CPU load+freq, GPU (GR3D), EMC, every thermal
+  zone + throttle headroom, INA3221 power rails (now/avg), disk, network, plus
+  nvpmodel power mode + governor. `GET /nano`, enriched `/metrics`. ⚡ `jetson_clocks`
+  turbo toggle (`POST /nano/jetson_clocks`). NANO HUD panel with live GPU/PWR/TEMP
+  trend graphs; SYSTEMS rail gains GPU% + power (W).
+- **Self-healing memory watchdog** — auto-refreshes `jarvis-vlm` when MemAvailable
+  stays critically low while idle (the box saturates and the VLM stalls on the
+  mmproj vision prefill); rate-limited, never mid-turn. `POST /nano/autorefresh`
+  to tune. Decoupled the dashboard from VLM restarts (`Requires=`→`Wants=`).
+- **VLM KV-prefix cache + inference telemetry** — `cache_prompt` reuses the
+  system+history prefix (less prefill); tok/s · TTFT · prefill surfaced at
+  `/nano`, `/metrics`, and the HUD.
+- **Perception mode (real-time NanoOWL)** — `POST /perception` swaps VLM⊕OWL
+  (mutually exclusive on 8 GB; `jarvis-owl.service` now `Conflicts=jarvis-vlm`
+  instead of `Wants=`), with a "VLM PAUSED" banner + a live-boxes loop. The
+  mode-switch is validated end-to-end; OWL detector tuning is tracked.
+- **Live detection ticker** — on-feed chips of the current scene's objects, self-
+  refreshing via throttled background re-captions (`/memory/visual/capture {bg:true}`),
+  with an age badge ("live"/"12s"/"2m").
+- **Visualizations** — 3D point-cloud control suite (color modes / density / live
+  re-scan / depth + size sliders / fps); NANO live trend graphs; detection-
+  frequency bar chart in the Entities pane.
+- **UX** — command dock decluttered (single-row chips, dropped kbd legend, solid
+  scrim); SYSTEMS rail + dock + ticker given solid dark scrims so they never wash
+  out over the camera feed.
+- **Camera 640×480 → 1280×720** (the C615 does MJPEG up to 1080p) — ~3× sharper
+  investigate crops; VLM turns still downscale to 512×384 so they stay fast.
+- **Robustness / hard-won bug fixes:**
+  - `stream_vlm` crashed on the empty-`choices` final chunk that
+    `stream_options.include_usage` introduced — silently breaking the captioner,
+    perf recording, and interactive turns. Guard: `(obj.get("choices") or [{}])[0]`.
+  - Fork-under-memory-pressure stalls: `phash_frame`, `capture_frame_for_vlm`, and
+    the visual-memory capture moved from an ffmpeg subprocess → in-process PIL
+    (free RAM routinely sits <100 MB; forking the large process stalled every turn
+    at the capture phase).
+  - `on_token()` guarded so a TTS (Piper) failure can't abort the VLM stream.
+  - Tap-investigate identified the surroundings (the chair) not the tapped object
+    → tighter point crop (0.30→0.20) + a center-focused identify prompt.
+  - Reticle ↔ crop misalignment under `object-fit: cover` → a proper cover
+    transform for both the tap point and the reticle placement.
+
+---
+
 ## 2026-06-15 — session 3 (agent + world-model + operational HUD)
 
 Turned the conversational VLM into an Iron-Man-style agent with a

@@ -273,3 +273,36 @@ The 512×384 frame that was actually fed to the VLM for that turn.
 ### Telemetry
 `GET /metrics` now also returns: `owl_up`, `watch_count`, `uptime_s`,
 `vmem_count`, `vmem_enabled`, `tool_count`, `agent_mode_enabled`.
+
+---
+
+## v4 endpoints (diagnostics, perception, dataset export)
+
+### Nano diagnostics & power
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/nano` | full Jetson telemetry snapshot from a persistent `tegrastats` stream: `{cpu:[{load,freq}], gpu_util, emc_util, temps:{...}, temp_max_c, throttle_headroom_c, power:{VDD_IN:{now,avg},...}, power_total_mw, ram/swap, net_rx_kbs, net_tx_kbs, meta:{power_mode, governor, jetson_clocks, disk_*}, vlm:{tok_s,ttft_ms,prefill_ms,prompt_n}, autorefresh:{enabled,refreshes,min_avail_mb}, ok}` |
+| POST | `/nano/jetson_clocks` | ⚡ turbo. Body `{on:bool}` — locks all clocks to max (or restores DVFS). Stores pre-boost state so `--restore` is clean |
+| POST | `/nano/autorefresh` | tune the self-healing watchdog. Body `{enabled?:bool, min_avail_mb?:int}` |
+
+`GET /metrics` also gains: `gpu_util`, `emc_util`, `power_w`, `cpu_load_avg`,
+`power_mode`, `jetson_clocks`, `throttle_headroom_c`, `vlm_tok_s`, `vlm_ttft_ms`,
+`vlm_autorefresh`, `vlm_refreshes`, `perception_mode`, `perception_transition`.
+
+### Perception mode (real-time NanoOWL ⊕ VLM)
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/perception` | Body `{on:bool}`. Threaded mode switch — stops the VLM, CMA-preflights, starts OWL (and back). Mutually exclusive on 8 GB (`jarvis-owl` `Conflicts=jarvis-vlm`); the dashboard survives (voice `Wants=` not `Requires=`). Poll `perception_mode`/`owl_up` in `/metrics`; draw live boxes via `POST /tool/detect_objects` |
+
+### Visual-memory capture (live ticker)
+`POST /memory/visual/capture` accepts `{bg:true}` → background caption
+(`priority=False`: yields to interactive turns, skips if the VLM is busy). Used by
+the live detection ticker to keep the current-view objects fresh.
+
+### Training-dataset export ("robotics data engine")
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/dataset/export` | build a portable dataset from visual memory + grounded Q&A. Body `{since_days?, limit?, include_frames?, include_turns?, consent?:{...}}` → `{ok, name, counts, bytes, card_url, download_url}`. Writes Open-X/LeRobot-friendly JSONL (`vision_language.jsonl`, `visual_qa.jsonl`) + copied frames + `meta/info.json` + `meta/consent.json` + `DATASET_CARD.md` |
+| GET | `/dataset/exports` | list prior exports with counts |
+| GET | `/dataset/card/<name>` | the dataset card (markdown) |
+| GET | `/dataset/dl/<name>.zip` | download the bundle as a zip (zipped on demand) |

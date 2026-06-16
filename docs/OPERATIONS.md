@@ -112,6 +112,35 @@ Open the settings drawer (gear icon, top-right). Changes apply on
 "Reset" returns all four to defaults (including the canonical anti-
 hallucination system prompt — keep this).
 
+### Diagnostics, turbo, perception, self-heal (v4)
+
+```bash
+# Full Jetson telemetry (GPU/CPU/thermal/power/disk/net) — also in the NANO panel
+curl -s :8085/nano | python3 -m json.tool
+
+# ⚡ Turbo: lock all clocks to max (or restore DVFS)
+curl -sX POST :8085/nano/jetson_clocks -d '{"on":true}'   # ... {"on":false} to restore
+
+# Perception mode: swap to real-time NanoOWL boxes (PAUSES the VLM — 8 GB can't
+# run both). Returns to the VLM on {"on":false} (~40 s reload).
+curl -sX POST :8085/perception -d '{"on":true}'
+
+# Self-healing watchdog (auto-refreshes the VLM under memory pressure)
+curl -sX POST :8085/nano/autorefresh -d '{"enabled":true,"min_avail_mb":160}'
+
+# Export a training dataset from visual memory + grounded Q&A
+curl -sX POST :8085/dataset/export -d '{"limit":5000}'    # then GET /dataset/exports
+```
+
+> **If the VLM degrades / stalls** (returns empty captions, free RAM tiny):
+> `sudo systemctl restart jarvis-vlm` reclaims ~3 GB. The watchdog does this
+> automatically when idle, but a manual kick is instant. The dashboard survives
+> a VLM restart (voice `Wants=` not `Requires=`).
+
+> **Unit files changed in v4** (`jarvis-voice` `Requires`→`Wants`; `jarvis-owl`
+> `Wants`→`Conflicts=jarvis-vlm`). After pulling, re-deploy + reload:
+> `sudo cp scripts/jarvis-*.service /etc/systemd/system/ && sudo systemctl daemon-reload`.
+
 ---
 
 ## Troubleshooting

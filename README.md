@@ -55,12 +55,14 @@ the thing you talk to; the chat recedes into ephemeral captions. Around it:
 |---|---|
 | **Companion orb** | three.js audio-reactive fresnel orb + particle halo; reacts to your voice |
 | **Edge-glow presence** | full-viewport border that breathes/idles and shifts color by state (listening/thinking/speaking/alert) |
-| **SYSTEMS rail** | live link-health of every subsystem (VLM/CAM/STT/TTS/DETECT/WAKE/AGENT/LIVE), resources, knowledge counts, **live telemetry sparklines** |
+| **SYSTEMS rail** | live link-health of every subsystem (VLM/CAM/STT/TTS/DETECT/WAKE/AGENT/LIVE), resources (RAM/**GPU%**/SoC/**power W**/FPS/uptime), knowledge counts, **telemetry sparklines** |
+| **NANO diagnostics** | full Jetson telemetry panel — per-core CPU, GPU/EMC, every thermal zone + throttle headroom, INA3221 power rails, disk, network; **live GPU/PWR/TEMP trend graphs**; VLM tok/s; ⚡ Turbo (`jetson_clocks`); SELF-HEAL toggle |
+| **Detection ticker** | on-feed chips of what JARVIS is detecting right now, self-refreshing, with an age badge |
 | **OPERATION + REASONING** | what JARVIS is doing right now + a live plan→act→observe stream |
-| **Intel panel** | Talk · Entities · Activity (tool-call ledger) · Tools (capability catalog) · Seen · Memory |
+| **Intel panel** | Talk · Entities (+ **detection-frequency chart**) · Activity (tool-call ledger) · Tools (capability catalog) · Seen · Memory |
 | **Entity inspector** | object-centric dossiers + **co-occurrence links** you can pivot between (Palantir Gotham core) |
 | **Link-chart** | full-screen force-directed graph of entities and their links |
-| **3D point-cloud** | rotating depth-from-luminance scan of the live scene |
+| **3D point-cloud** | depth-from-luminance scan of the live scene + a control suite (color modes · density · live re-scan · depth/size · fps) |
 | **Timeline scrubber** | scrub back through what JARVIS saw over time |
 | **Targeting frame + radar sweep** | always-on Iron-Man HUD chrome |
 | **⌘K spotlight** | global search across entities, capabilities, and memory |
@@ -77,7 +79,8 @@ GPU (three.js via CDN) — zero extra load on the Jetson.
 **Vision** — open-vocabulary VQA · `investigate` (locate → low-light enhance →
 digital zoom → fine-grained identify → web lookup) · tap/point queries ·
 read-all-text (OCR) · barcode lookup · depth-of-point · multi-frame compare ·
-optional **NanoOWL** open-vocab detection (opt-in; see *8 GB reality*).
+**perception mode** — real-time **NanoOWL** open-vocab detection boxes, a
+systemd-enforced VLM⊕OWL mode switch (8 GB can't run both; see *8 GB reality*).
 
 **Voice** — openWakeWord "Hey Jarvis" · whisper.cpp `tiny.en` STT · Qwen2.5-VL
 streaming · Piper `en_GB-alan` (British male) sentence-streamed, gapless Web-Audio
@@ -96,6 +99,17 @@ crypto), productivity (notes, todos, reminders, bookmarks, journal), vision,
 memory, self-management, and smart-home (Hue). Cloud-frontier escalation
 (Claude/GPT/Gemini) exists but is **gated off by default** — fully local unless
 you opt in with a key.
+
+**Diagnostics & self-healing** — full Jetson telemetry (`tegrastats` + INA3221 +
+sysfs) at `/nano`; live VLM inference perf (tok/s, TTFT, prefill, KV-cache reuse);
+a `jetson_clocks` **turbo** toggle; and a **self-healing watchdog** that auto-
+refreshes the VLM when the 8 GB ceiling saturates it (idle-gated, rate-limited).
+
+**Training-data export ("robotics data engine")** — `export_dataset` turns the
+on-device visual memory + grounded Q&A into a portable, standards-aligned bundle
+(Open-X / LeRobot-friendly JSONL + frames + a consent/provenance card) — vision-
+language data auto-annotated at the edge. Observational only (`action=null`);
+action-conditioned trajectories require wiring the same loop into a robot.
 
 Full HTTP surface in [`docs/API.md`](docs/API.md).
 
@@ -135,9 +149,31 @@ fight against that ceiling. The hard-won findings:
   server. A single `VLM_BUSY` lock — interactive blocks, background skips — fixed
   it (0 crashes under load after).
 - **One VLM + small engines is the real budget.** Running NanoOWL co-resident
-  with the *full* VLM OOM-kills / fails CUDA init. So open-vocab detection is
-  opt-in, and continuous awareness is delivered via the VLM captioner instead.
+  with the *full* VLM OOM-kills / fails CUDA init. So perception mode is a
+  **mutually-exclusive swap** enforced by systemd (`jarvis-owl` `Conflicts=
+  jarvis-vlm`); continuous awareness without OWL comes from the VLM captioner.
   (Real-time detection co-residency wants an Orin NX 16 GB.)
+- **Don't `fork()` a 4 GB process when free RAM is <100 MB.** Free memory
+  routinely sits double-digit MB, and spawning a subprocess (ffmpeg/piper) copies
+  the page tables of the large Python process — which *stalls for seconds* and was
+  silently breaking every interactive turn at the capture phase. The fix was to do
+  image work **in-process with PIL** (pHash, crop/scale, captioner capture) — no
+  fork, ~1 ms, robust under pressure.
+- **The 8 GB box saturates over time — so self-heal.** When `MemAvailable`
+  collapses the VLM stalls on the (~800 MB contiguous) mmproj vision prefill and
+  returns nothing. A watchdog auto-refreshes `jarvis-vlm` to reclaim ~3 GB —
+  idle-gated, rate-limited, never mid-turn. The diagnostics make the ceiling
+  *visible* so it's a known quantity, not a mystery.
+- **`stream_options.include_usage` ships an empty-`choices` final chunk.** Guard
+  list indexing on streamed SSE chunks (`(obj.get("choices") or [{}])[0]`) — the
+  naive default only catches a *missing* key, and an `IndexError` on that last
+  chunk crashed the whole stream (captioner, perf, and turns).
+- **`object-fit: cover` ≠ identity mapping.** The full-bleed feed is aspect-
+  filled, so element-% and image-% diverge; tap-to-crop and the targeting reticle
+  both need an explicit cover transform or they point at different pixels.
+- **Source resolution beats clever cropping.** Investigate crops were soft until
+  the stream was bumped 640×480 → 1280×720 (the C615 does 1080p) — VLM turns stay
+  fast because they downscale to 512×384 regardless.
 - **Camera autofocus matters more than the model.** A webcam left in manual
   focus made it misread a Nerds box as Skittles; re-asserting auto
   focus/exposure/white-balance was a bigger accuracy win than any prompt change.
