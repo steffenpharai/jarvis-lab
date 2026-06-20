@@ -408,7 +408,7 @@ class ToolContext:
 
 HTTP = httpx.Client(
     timeout=httpx.Timeout(10.0, connect=5.0),
-    headers={"User-Agent": "jarvis-lab/1.0 (+https://github.com/steffenpharai/zip)"},
+    headers={"User-Agent": "jarvis-lab/1.0 (+https://github.com/steffenpharai/jarvis-lab)"},
     follow_redirects=True,
 )
 
