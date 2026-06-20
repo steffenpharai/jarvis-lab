@@ -1,7 +1,7 @@
 # JARVIS Lab
 
 **An offline, Iron-Man-style AI — vision, voice, agentic tools, and a
-Palantir/Anduril-grade operational HUD — running entirely on a single
+command-center operational HUD — running entirely on a single
 8 GB NVIDIA Jetson Orin Nano Super.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -66,7 +66,7 @@ the thing you talk to; the chat recedes into ephemeral captions. Around it:
 | **Detection ticker** | on-feed chips of what JARVIS is detecting right now, self-refreshing, with an age badge |
 | **OPERATION + REASONING** | what JARVIS is doing right now + a live plan→act→observe stream |
 | **Intel panel** | Talk · Entities (+ **detection-frequency chart**) · Activity (tool-call ledger) · Tools (capability catalog) · Seen · Memory |
-| **Entity inspector** | object-centric dossiers + **co-occurrence links** you can pivot between (Palantir Gotham core) |
+| **Entity inspector** | object-centric dossiers + **co-occurrence links** you can pivot between (object-centric cross-linking) |
 | **Link-chart** | full-screen force-directed graph of entities and their links |
 | **3D point-cloud** | depth-from-luminance scan of the live scene + a control suite (color modes · density · live re-scan · depth/size · fps) |
 | **Timeline scrubber** | scrub back through what JARVIS saw over time |
@@ -75,7 +75,7 @@ the thing you talk to; the chat recedes into ephemeral captions. Around it:
 | **Top bar** | labeled controls: a **power pill** (FULL/ECO/WAKING + menu), Intel, Diagnostics, a Views ▾ menu (link-chart/timeline/point-cloud/training-data), More ▾, settings |
 | **Footer** | live status strip — ● state · model · tok/s · fps · power (W) + a shortcuts hint |
 
-Design language: Palantir Blueprint density + Apple "Liquid Glass" + restraint.
+Design language: information-dense + Apple "Liquid Glass" + restraint.
 A single accent (rust) with semantic state colors, Geist + Geist Mono with
 tabular numerals, physics-based motion. All eye-candy renders on the *viewer's*
 GPU (three.js via CDN) — zero extra load on the Jetson.
