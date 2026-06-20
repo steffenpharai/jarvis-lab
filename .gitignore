@@ -7,3 +7,6 @@ test_images/*.jpg
 test_images/*.png
 __pycache__/
 *.pyc
+.env
+*.key
+keys.json
